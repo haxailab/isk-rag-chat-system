@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>無機RAG - ISK AI Assistant</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --isk-red: #DC143C;
+            --isk-red-dark: #B91C3C;
+            --isk-red-light: #FEE2E2;
+        }
+
+        .message-bubble {
+            max-width: 70%;
+            word-wrap: break-word;
+        }
+        .file-upload-area {
+            border: 2px dashed #d1d5db;
+            transition: all 0.3s ease;
+        }
+        .file-upload-area.dragover {
+            border-color: var(--isk-red);
+            background-color: var(--isk-red-light);
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: var(--isk-red);
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: var(--isk-red-dark);
+        }
+        .isk-gradient {
+            background: linear-gradient(135deg, var(--isk-red) 0%, var(--isk-red-dark) 100%);
+        }
+        .logo-main {
+            height: 48px;
+            max-width: 200px;
+        }
+        .login-container {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--isk-red-light) 0%, white 50%, var(--isk-red-light) 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root">
+        <!-- フォールバック表示 -->
+        <div class="min-h-screen flex items-center justify-center">
+            <div class="text-center">
+                <div class="text-xl mb-4" style="color: var(--isk-red)">無機RAG システム読み込み中...</div>
+                <div class="animate-spin rounded-full h-8 w-8 border-2 border-t-transparent mx-auto" style="border-color: var(--isk-red); border-top-color: transparent;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/babel">
+        console.log('🚀 ISK RAG System (認証付き完全版) 開始');
+
+        const { useState, useEffect, useRef } = React;
+
+        // AWS Cognito設定
+        const CONFIG = {
+            region: 'ap-northeast-1',
+            userPoolId: 'ap-northeast-1_zG065zZXu',
+            userPoolClientId: '320evpoao9264eh5ounfq8c313',
+            apiGatewayUrl: 'https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod'
+        };
+
+        // Cognito User Pool設定
+        const poolData = {
+            UserPoolId: CONFIG.userPoolId,
+            ClientId: CONFIG.userPoolClientId
+        };
+        const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+
+        // 認証管理クラス
+        class AuthManager {
+            constructor() {
+                this.currentUser = null;
+                this.accessToken = null;
+                this.idToken = null;
+            }
+
+            // ログイン
+            signIn(username, password) {
+                return new Promise((resolve, reject) => {
+                    const authenticationData = {
+                        Username: username,
+                        Password: password,
+                    };
+
+                    const authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails(authenticationData);
+
+                    const userData = {
+                        Username: username,
+                        Pool: userPool,
+                    };
+
+                    const cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+
+                    cognitoUser.authenticateUser(authenticationDetails, {
+                        onSuccess: (result) => {
+                            console.log('Authentication successful:', result);
+
+                            this.accessToken = result.getAccessToken().getJwtToken();
+                            this.idToken = result.getIdToken().getJwtToken();
+                            this.currentUser = cognitoUser;
+
+                            // ユーザー情報を取得
+                            const payload = result.getIdToken().payload;
+                            const userInfo = {
+                                username: payload['cognito:username'] || username,
+                                email: payload.email,
+                                name: payload.given_name || username,
+                                sub: payload.sub
+                            };
+
+                            // ローカルストレージに保存
+                            localStorage.setItem('access_token', this.accessToken);
+                            localStorage.setItem('id_token', this.idToken);
+                            localStorage.setItem('user_info', JSON.stringify(userInfo));
+
+                            resolve(userInfo);
+                        },
+                        onFailure: (err) => {
+                            console.error('Authentication failed:', err);
+                            reject(err);
+                        },
+                        newPasswordRequired: (userAttributes, requiredAttributes) => {
+                            console.log('New password required');
+                            reject(new Error('新しいパスワードの設定が必要です'));
+                        }
+                    });
+                });
+            }
+
+            // ログアウト
+            signOut() {
+                if (this.currentUser) {
+                    this.currentUser.signOut();
+                }
+
+                this.currentUser = null;
+                this.accessToken = null;
+                this.idToken = null;
+
+                localStorage.removeItem('access_token');
+                localStorage.removeItem('id_token');
+                localStorage.removeItem('user_info');
+            }
+
+            // 現在のユーザーを取得
+            getCurrentUser() {
+                const savedToken = localStorage.getItem('id_token');
+                const savedUserInfo = localStorage.getItem('user_info');
+
+                if (savedToken && savedUserInfo) {
+                    this.accessToken = localStorage.getItem('access_token');
+                    this.idToken = savedToken;
+                    return JSON.parse(savedUserInfo);
+                }
+
+                return null;
+            }
+
+            // JWTトークンを取得 (API Gateway認証用にID Tokenを使用)
+            getAccessToken() {
+                return this.idToken || localStorage.getItem('id_token');
+            }
+        }
+
+        const authManager = new AuthManager();
+
+        // メインアプリケーション
+        function App() {
+            console.log('📱 App component rendering');
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                checkAuthState();
+            }, []);
+
+            const checkAuthState = () => {
+                const currentUser = authManager.getCurrentUser();
+                setUser(currentUser);
+                setLoading(false);
+            };
+
+            const handleLogin = (userInfo) => {
+                setUser(userInfo);
+            };
+
+            const handleLogout = () => {
+                authManager.signOut();
+                setUser(null);
+            };
+
+            if (loading) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center">
+                        <div className="text-center">
+                            <div className="text-xl mb-4" style={{color: 'var(--isk-red)'}}>認証状態確認中...</div>
+                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-t-transparent mx-auto" style={{borderColor: 'var(--isk-red)', borderTopColor: 'transparent'}}></div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return user ?
+                <ChatInterface user={user} onSignOut={handleLogout} /> :
+                <LoginForm onLogin={handleLogin} />;
+        }
+
+        // ログインフォーム
+        function LoginForm({ onLogin }) {
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!email || !password) {
+                    setError('メールアドレスとパスワードを入力してください');
+                    return;
+                }
+
+                setError('');
+                setLoading(true);
+
+                try {
+                    const userInfo = await authManager.signIn(email, password);
+                    onLogin(userInfo);
+                } catch (error) {
+                    console.error('Login error:', error);
+                    setError(error.message || 'ログインに失敗しました');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="login-container flex items-center justify-center">
+                    <div className="max-w-md w-full mx-4">
+                        <div className="bg-white rounded-lg shadow-lg p-8">
+                            <div className="text-center mb-8">
+                                <img src="https://d3hwl9tcru7yod.cloudfront.net/assets/isk-logo.png"
+                                     alt="ISK Logo" className="mx-auto mb-4" style={{height: '64px', maxWidth: '240px'}} />
+                                <h1 className="text-2xl font-bold mb-2" style={{color: 'var(--isk-red)'}}>無機RAG</h1>
+                                <p className="text-gray-600">ISK AI Assistant</p>
+                                <p className="text-sm text-gray-500 mt-2">Local Insight, Global Impact</p>
+                            </div>
+
+                            <form onSubmit={handleSubmit} className="space-y-6">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        メールアドレス
+                                    </label>
+                                    <input
+                                        type="email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
+                                        style={{'--tw-ring-color': 'var(--isk-red)'}}
+                                        placeholder="your-email@isk.com"
+                                        disabled={loading}
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        パスワード
+                                    </label>
+                                    <input
+                                        type="password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
+                                        style={{'--tw-ring-color': 'var(--isk-red)'}}
+                                        placeholder="••••••••"
+                                        disabled={loading}
+                                    />
+                                </div>
+
+                                {error && (
+                                    <div className="bg-red-50 border border-red-300 text-red-700 px-4 py-3 rounded-lg text-sm">
+                                        {error}
+                                    </div>
+                                )}
+
+                                <button
+                                    type="submit"
+                                    disabled={loading}
+                                    className="w-full py-3 px-4 text-white font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity isk-gradient"
+                                >
+                                    {loading ? 'ログイン中...' : 'ログイン'}
+                                </button>
+                            </form>
+
+                            <div className="mt-6 text-center text-sm text-gray-600">
+                                <p>ISK社内システムへのアクセスには認証が必要です</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // チャットインターフェース（認証後）
+        function ChatInterface({ user, onSignOut }) {
+            return (
+                <div className="h-screen flex">
+                    {/* サイドバー */}
+                    <Sidebar user={user} onSignOut={onSignOut} />
+
+                    {/* メインチャットエリア */}
+                    <div className="flex-1 flex flex-col">
+                        <Header user={user} onSignOut={onSignOut} />
+                        <ChatArea user={user} />
+                    </div>
+                </div>
+            );
+        }
+
+        // サイドバーコンポーネント
+        function Sidebar({ user, onSignOut }) {
+            const [sessionFiles, setSessionFiles] = useState([]);
+
+            return (
+                <div className="w-80 text-white flex flex-col" style={{backgroundColor: 'var(--isk-red-dark)'}}>
+                    {/* ヘッダー */}
+                    <div className="p-4 border-b" style={{borderColor: 'var(--isk-red)'}}>
+                        <div className="flex items-center mb-2">
+                            <img src="https://d3hwl9tcru7yod.cloudfront.net/assets/isk-logo.png"
+                                 alt="ISK Logo" className="logo-main mr-3" />
+                        </div>
+                        <h2 className="text-lg font-semibold">📁 セッション管理</h2>
+                        <div className="mt-2 text-sm opacity-80">
+                            ユーザー: {user.name || user.username}
+                        </div>
+                    </div>
+
+                    {/* ファイル一覧 */}
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                        <h3 className="text-sm font-medium mb-3">
+                            📄 アップロード済みファイル ({sessionFiles.length})
+                        </h3>
+
+                        {sessionFiles.length > 0 ? (
+                            <div className="space-y-2">
+                                {sessionFiles.map(file => (
+                                    <div key={file.file_id} className="p-3 rounded-lg" style={{backgroundColor: 'var(--isk-red)'}}>
+                                        <div className="font-medium truncate text-sm">
+                                            {file.filename}
+                                        </div>
+                                        <div className="text-xs opacity-80 mt-1 flex justify-between">
+                                            <span>{Math.round(file.size / 1024)}KB</span>
+                                            <span className="px-2 py-1 rounded text-xs bg-green-600 text-green-100">
+                                                {file.processing_status === 'ready' ? '処理済み' : '処理中'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-sm opacity-70 text-center py-8">
+                                ファイルをドラッグ&ドロップして<br />アップロードしてください
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ユーザー情報・設定 */}
+                    <div className="p-4 border-t" style={{borderColor: 'var(--isk-red)'}}>
+                        <label className="flex items-center text-sm mb-3">
+                            <input
+                                type="checkbox"
+                                defaultChecked={true}
+                                className="mr-2"
+                            />
+                            ハイブリッド検索（Knowledge Base + ファイル）
+                        </label>
+
+                        <button
+                            onClick={onSignOut}
+                            className="w-full px-4 py-2 text-white rounded text-sm hover:opacity-90 bg-gray-600">
+                            ログアウト
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // ヘッダーコンポーネント
+        function Header({ user, onSignOut }) {
+            return (
+                <header className="text-white p-4 shadow-md isk-gradient">
+                    <div className="flex justify-between items-center">
+                        <div className="flex items-center space-x-4">
+                            <h1 className="text-xl font-bold">🧪 無機RAG - ISK AI Assistant（認証版）</h1>
+                            <span className="text-sm bg-green-500 px-2 py-1 rounded">セキュア</span>
+                        </div>
+                        <div className="flex items-center space-x-4">
+                            <span className="text-sm">ユーザー: {user.name || user.username}</span>
+                            <button
+                                onClick={onSignOut}
+                                className="hover:opacity-80 px-4 py-2 rounded text-sm"
+                                style={{backgroundColor: 'var(--isk-red-dark)'}}>
+                                ログアウト
+                            </button>
+                        </div>
+                    </div>
+                </header>
+            );
+        }
+
+        // チャットエリアコンポーネント
+        function ChatArea({ user }) {
+            const [messages, setMessages] = useState([
+                {
+                    type: 'system',
+                    content: `🎉 無機RAG - ISK AI Assistant へようこそ、${user.name || user.username}さん！\n\n• 認証済みセキュアアクセス\n• ファイルをドラッグ&ドロップしてアップロード\n• Knowledge Base検索 + アップロードファイル検索\n• ISK社内文書の高精度検索機能\n\n「Local Insight, Global Impact」の精神で、最高のサポートを提供します。`,
+                    timestamp: new Date()
+                }
+            ]);
+            const [inputMessage, setInputMessage] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [dragOver, setDragOver] = useState(false);
+            const [currentSession, setCurrentSession] = useState(null);
+            const [sessionFiles, setSessionFiles] = useState([]);
+            const [uploadProgress, setUploadProgress] = useState([]);
+
+            const messagesEndRef = useRef(null);
+
+            useEffect(() => {
+                scrollToBottom();
+            }, [messages]);
+
+            const scrollToBottom = () => {
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            };
+
+            // 認証付きAPIリクエスト
+            const authenticatedRequest = async (url, options = {}) => {
+                const token = authManager.getAccessToken();
+                if (!token) {
+                    throw new Error('認証トークンがありません');
+                }
+
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                    ...options.headers
+                };
+
+                return fetch(url, {
+                    ...options,
+                    headers
+                });
+            };
+
+            // ファイルアップロード処理
+            const handleFileUpload = async (files) => {
+                if (!files || files.length === 0) return;
+
+                console.log('認証付きファイルアップロード開始:', files);
+
+                try {
+                    const fileArray = Array.from(files);
+                    setUploadProgress(fileArray.map(f => ({ name: f.name, status: 'uploading' })));
+
+                    // ファイルをBase64に変換
+                    const filesData = await Promise.all(
+                        fileArray.map(file => {
+                            return new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = (e) => {
+                                    const base64Content = e.target.result.split(',')[1];
+                                    resolve({
+                                        filename: file.name,
+                                        content: base64Content,
+                                        contentType: file.type
+                                    });
+                                };
+                                reader.onerror = reject;
+                                reader.readAsDataURL(file);
+                            });
+                        })
+                    );
+
+                    // 認証付きファイルアップロード
+                    const response = await authenticatedRequest(`${CONFIG.apiGatewayUrl}/file-upload`, {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            files: filesData
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`アップロードエラー: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+
+                    console.log('✅ 認証付きファイルアップロード成功:', data);
+
+                    // セッションIDを設定
+                    if (data.session_id) {
+                        setCurrentSession(data.session_id);
+                    }
+
+                    // ファイル一覧を更新
+                    if (data.uploaded_files) {
+                        setSessionFiles(prev => [...prev, ...data.uploaded_files]);
+                    }
+
+                    // 成功メッセージを表示
+                    const successMessage = {
+                        type: 'system',
+                        content: `✅ ${data.uploaded_files?.length || fileArray.length}個のファイルがアップロードされました！\n\nセッション: ${data.session_id}\n\n${data.uploaded_files?.map(f => `• ${f.filename} (${f.processing_status})`).join('\n') || ''}`,
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, successMessage]);
+
+                } catch (error) {
+                    console.error('認証付きファイルアップロードエラー:', error);
+
+                    const errorMessage = {
+                        type: 'error',
+                        content: `ファイルアップロードに失敗しました: ${error.message}`,
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, errorMessage]);
+                } finally {
+                    setUploadProgress([]);
+                }
+            };
+
+            // 拡張チャット送信
+            const sendEnhancedMessage = async (message) => {
+                if (!message.trim()) return;
+
+                const userMessage = {
+                    type: 'user',
+                    content: message,
+                    timestamp: new Date()
+                };
+
+                setMessages(prev => [...prev, userMessage]);
+                setLoading(true);
+
+                try {
+                    // 認証付きチャット
+                    const endpoint = currentSession ? 'enhanced-chat' : 'chat';
+                    const requestBody = currentSession
+                        ? {
+                            message: message,
+                            session_id: currentSession,
+                            use_session_files: true
+                          }
+                        : {
+                            message: message
+                          };
+
+                    console.log(`📡 認証付き ${endpoint} エンドポイント使用:`, requestBody);
+
+                    const response = await authenticatedRequest(`${CONFIG.apiGatewayUrl}/${endpoint}`, {
+                        method: 'POST',
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`API エラー: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+
+                    const aiMessage = {
+                        type: 'assistant',
+                        content: data.answer,
+                        model: data.model || 'Unknown Model',
+                        sources: data.sources || [],
+                        source_links: data.source_links || [],
+                        is_rag_response: data.is_rag_response || false,
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, aiMessage]);
+                } catch (error) {
+                    const errorMessage = {
+                        type: 'error',
+                        content: `エラー: ${error.message}`,
+                        timestamp: new Date()
+                    };
+                    setMessages(prev => [...prev, errorMessage]);
+                }
+
+                setLoading(false);
+            };
+
+            // メッセージ送信
+            const sendMessage = async (e) => {
+                e.preventDefault();
+                if (!inputMessage.trim() || loading) return;
+
+                await sendEnhancedMessage(inputMessage);
+                setInputMessage('');
+            };
+
+            // ドラッグ&ドロップ処理
+            const handleDragOver = (e) => {
+                e.preventDefault();
+                setDragOver(true);
+            };
+
+            const handleDragLeave = (e) => {
+                e.preventDefault();
+                setDragOver(false);
+            };
+
+            const handleDrop = (e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const files = e.dataTransfer.files;
+                handleFileUpload(files);
+            };
+
+            return (
+                <div className="flex-1 flex flex-col">
+                    {/* メッセージエリア */}
+                    <div
+                        className={`flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 ${
+                            dragOver ? 'border-2 border-dashed' : ''
+                        }`}
+                        style={dragOver ? {borderColor: 'var(--isk-red)', backgroundColor: 'var(--isk-red-light)'} : {}}
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                    >
+                        {dragOver && (
+                            <div className="fixed inset-0 bg-opacity-90 flex items-center justify-center z-50 pointer-events-none" style={{backgroundColor: 'var(--isk-red-light)'}}>
+                                <div className="text-center">
+                                    <div className="text-4xl mb-4">📁</div>
+                                    <div className="text-2xl font-bold" style={{color: 'var(--isk-red)'}}>ファイルをここにドロップ</div>
+                                    <div className="text-gray-600 mt-2">PDF, 画像, Office文書, テキストファイルに対応</div>
+                                </div>
+                            </div>
+                        )}
+
+                        {messages.map((message, index) => (
+                            <div
+                                key={index}
+                                className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                            >
+                                <div className={`message-bubble p-4 rounded-lg ${
+                                    message.type === 'user'
+                                        ? 'text-white isk-gradient'
+                                        : message.type === 'error'
+                                        ? 'bg-red-100 text-red-800 border border-red-300'
+                                        : message.type === 'system'
+                                        ? 'text-white'
+                                        : 'bg-white border border-gray-200 shadow-sm'
+                                }`}
+                                style={message.type === 'system' ? {backgroundColor: 'var(--isk-red)', opacity: 0.9} : {}}>
+                                    <div className="whitespace-pre-wrap">{message.content}</div>
+
+                                    {message.model && message.type === 'assistant' && (
+                                        <div className="text-xs opacity-70 mt-2">
+                                            {message.model}
+                                        </div>
+                                    )}
+
+                                    <div className="text-xs opacity-50 mt-2">
+                                        {message.timestamp.toLocaleTimeString()}
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {loading && (
+                            <div className="flex justify-start">
+                                <div className="bg-gray-200 p-4 rounded-lg max-w-md">
+                                    <div className="flex items-center space-x-2">
+                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-t-transparent" style={{borderColor: 'var(--isk-red)', borderTopColor: 'transparent'}}></div>
+                                        <span>無機RAGが回答中...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* 入力エリア */}
+                    <div className="border-t bg-white p-4">
+                        <div className="flex items-end space-x-3 max-w-6xl mx-auto">
+                            {/* ファイル選択ボタン */}
+                            <label className="cursor-pointer">
+                                <input
+                                    type="file"
+                                    multiple
+                                    accept=".pdf,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.docx,.xlsx,.pptx"
+                                    onChange={(e) => handleFileUpload(e.target.files)}
+                                    className="hidden"
+                                />
+                                <div className="flex items-center space-x-2 px-3 py-2 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 text-sm">
+                                    <span>📎</span>
+                                    <span>ファイル</span>
+                                </div>
+                            </label>
+
+                            {/* メッセージ入力フォーム */}
+                            <form onSubmit={sendMessage} className="flex-1 flex space-x-2">
+                                <input
+                                    type="text"
+                                    value={inputMessage}
+                                    onChange={(e) => setInputMessage(e.target.value)}
+                                    placeholder="無機RAGに質問してください..."
+                                    className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
+                                    style={{'--tw-ring-color': 'var(--isk-red)'}}
+                                    disabled={loading}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={loading || !inputMessage.trim()}
+                                    className="px-6 py-3 text-white rounded-lg font-medium disabled:bg-gray-400 hover:opacity-90 isk-gradient"
+                                >
+                                    送信
+                                </button>
+                            </form>
+                        </div>
+
+                        {/* ヒント */}
+                        <div className="max-w-6xl mx-auto mt-2">
+                            <div className="text-xs text-gray-500 text-center">
+                                🔒 認証済みセキュアアクセス | 💡 ファイルをドラッグ&ドロップするか、📎ボタンでアップロード | Local Insight, Global Impact
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Reactアプリケーションをレンダリング
+        console.log('📱 ReactDOM.render開始（ISK Design認証完全版）');
+        ReactDOM.render(<App />, document.getElementById('root'));
+        console.log('✅ ISK RAG System (認証完全版) 初期化完了');
+    </script>
+</body>
+</html>

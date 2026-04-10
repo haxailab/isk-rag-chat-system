@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISK RAG チャットシステム - React Step1</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+    <div id="root">
+        <!-- フォールバック表示 -->
+        <div class="min-h-screen flex items-center justify-center">
+            <div class="text-center">
+                <div class="text-xl text-red-600 mb-4">React読み込み中...</div>
+                <div class="text-sm text-gray-600">この表示が消えない場合はJavaScriptエラーが発生しています</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/babel">
+        console.log('🚀 React Step1 開始');
+        console.log('React:', typeof React);
+        console.log('ReactDOM:', typeof ReactDOM);
+
+        const { useState, useEffect } = React;
+
+        // Step1: 基本的なReactコンポーネント（認証なし）
+        function App() {
+            const [message, setMessage] = useState('React読み込み成功！');
+            const [testStatus, setTestStatus] = useState('準備中...');
+
+            useEffect(() => {
+                console.log('✅ App useEffect実行');
+                setTestStatus('React正常動作中');
+            }, []);
+
+            const testAPI = async () => {
+                setTestStatus('API接続中...');
+                try {
+                    const response = await fetch('https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod/test-chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ message: 'React からのテスト' })
+                    });
+
+                    const data = await response.json();
+                    setTestStatus(`API成功: ${data.model}`);
+                } catch (error) {
+                    setTestStatus(`APIエラー: ${error.message}`);
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-50">
+                    <header className="bg-blue-600 text-white p-6">
+                        <h1 className="text-3xl font-bold">🧪 ISK RAG React Step1</h1>
+                        <p className="text-blue-100 mt-2">基本的なReact機能テスト</p>
+                    </header>
+
+                    <div className="max-w-4xl mx-auto p-6 space-y-6">
+                        {/* ステータス確認 */}
+                        <div className="bg-white rounded-lg shadow p-6">
+                            <h2 className="text-xl font-semibold mb-4">📊 システムステータス</h2>
+
+                            <div className="space-y-3">
+                                <div className="flex items-center space-x-3">
+                                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                                    <span>React: {message}</span>
+                                </div>
+
+                                <div className="flex items-center space-x-3">
+                                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                                    <span>状態管理: {testStatus}</span>
+                                </div>
+                            </div>
+
+                            <button
+                                onClick={testAPI}
+                                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                            >
+                                API接続テスト
+                            </button>
+                        </div>
+
+                        {/* 簡易チャット */}
+                        <div className="bg-white rounded-lg shadow">
+                            <div className="p-4 border-b">
+                                <h3 className="text-lg font-semibold">💬 簡易チャット（React版）</h3>
+                            </div>
+
+                            <SimpleChat />
+                        </div>
+
+                        {/* 次のステップ */}
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+                            <h4 className="font-semibold text-blue-800 mb-2">📋 次のステップ</h4>
+                            <p className="text-blue-700 mb-4">この Step1 で基本動作を確認後、以下を段階的に実装：</p>
+                            <ul className="text-blue-700 space-y-1 mb-4">
+                                <li>• Step2: AWS Amplify + Cognito認証</li>
+                                <li>• Step3: ファイルアップロード機能</li>
+                                <li>• Step4: 拡張RAGチャット</li>
+                                <li>• Step5: 完全版UI</li>
+                            </ul>
+
+                            <div className="space-x-3">
+                                <button
+                                    onClick={() => window.location.href = '/simple.html'}
+                                    className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+                                >
+                                    簡易版に戻る
+                                </button>
+                                <button
+                                    onClick={() => alert('Step2は準備中です')}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                                >
+                                    Step2に進む
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // シンプルチャットコンポーネント
+        function SimpleChat() {
+            const [messages, setMessages] = useState([]);
+            const [inputMessage, setInputMessage] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            const sendMessage = async (e) => {
+                e.preventDefault();
+                if (!inputMessage.trim() || loading) return;
+
+                const userMessage = {
+                    type: 'user',
+                    content: inputMessage,
+                    timestamp: new Date()
+                };
+
+                setMessages(prev => [...prev, userMessage]);
+                setInputMessage('');
+                setLoading(true);
+
+                try {
+                    const response = await fetch('https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod/test-chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ message: inputMessage })
+                    });
+
+                    const data = await response.json();
+
+                    const aiMessage = {
+                        type: 'assistant',
+                        content: data.answer,
+                        model: data.model || 'Unknown',
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, aiMessage]);
+                } catch (error) {
+                    const errorMessage = {
+                        type: 'error',
+                        content: `エラー: ${error.message}`,
+                        timestamp: new Date()
+                    };
+                    setMessages(prev => [...prev, errorMessage]);
+                }
+
+                setLoading(false);
+            };
+
+            return (
+                <>
+                    <div className="h-64 overflow-y-auto p-4 space-y-3">
+                        {messages.length === 0 && (
+                            <div className="text-center text-gray-500">
+                                メッセージを入力してください...
+                            </div>
+                        )}
+
+                        {messages.map((msg, index) => (
+                            <div
+                                key={index}
+                                className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                            >
+                                <div className={`max-w-xs p-3 rounded-lg ${
+                                    msg.type === 'user'
+                                        ? 'bg-blue-500 text-white'
+                                        : msg.type === 'error'
+                                        ? 'bg-red-100 text-red-800 border border-red-300'
+                                        : 'bg-gray-100'
+                                }`}>
+                                    <div className="text-sm">{msg.content}</div>
+                                    {msg.model && (
+                                        <div className="text-xs opacity-70 mt-1">{msg.model}</div>
+                                    )}
+                                    <div className="text-xs opacity-50 mt-1">
+                                        {msg.timestamp.toLocaleTimeString()}
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {loading && (
+                            <div className="flex justify-start">
+                                <div className="bg-gray-200 p-3 rounded-lg max-w-xs">
+                                    <div className="flex items-center space-x-2">
+                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div>
+                                        <span className="text-sm">無機RAG回答中...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="p-4 border-t">
+                        <form onSubmit={sendMessage} className="flex space-x-2">
+                            <input
+                                type="text"
+                                value={inputMessage}
+                                onChange={(e) => setInputMessage(e.target.value)}
+                                placeholder="メッセージを入力..."
+                                className="flex-1 px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                disabled={loading}
+                            />
+                            <button
+                                type="submit"
+                                disabled={loading || !inputMessage.trim()}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
+                            >
+                                送信
+                            </button>
+                        </form>
+                    </div>
+                </>
+            );
+        }
+
+        // Reactアプリケーションをレンダリング
+        console.log('📱 ReactDOM.render開始');
+        ReactDOM.render(<App />, document.getElementById('root'));
+        console.log('✅ React Step1初期化完了');
+    </script>
+</body>
+</html>

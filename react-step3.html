@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISK RAG チャットシステム - 完全版</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .message-bubble {
+            max-width: 70%;
+            word-wrap: break-word;
+        }
+        .file-upload-area {
+            border: 2px dashed #d1d5db;
+            transition: all 0.3s ease;
+        }
+        .file-upload-area.dragover {
+            border-color: #3b82f6;
+            background-color: #dbeafe;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root">
+        <!-- フォールバック表示 -->
+        <div class="min-h-screen flex items-center justify-center">
+            <div class="text-center">
+                <div class="text-xl text-green-600 mb-4">完全版読み込み中...</div>
+                <div class="animate-spin rounded-full h-8 w-8 border-2 border-green-500 border-t-transparent mx-auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/babel">
+        console.log('🚀 React Step3 (完全版) 開始');
+
+        const { useState, useEffect, useRef } = React;
+
+        // API設定
+        const API_BASE_URL = 'https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod';
+
+        // メインアプリケーション
+        function App() {
+            const [currentSession, setCurrentSession] = useState(null);
+            const [sessionFiles, setSessionFiles] = useState([]);
+            const [isAuthenticated, setIsAuthenticated] = useState(true); // 認証スキップ
+
+            console.log('📱 App component rendering (Step3)');
+
+            // セッション管理
+            useEffect(() => {
+                // 認証スキップして直接使用
+                console.log('✅ 認証スキップ - テスト用');
+            }, []);
+
+            return (
+                <div className="h-screen flex">
+                    <Sidebar
+                        sessionFiles={sessionFiles}
+                        setSessionFiles={setSessionFiles}
+                        currentSession={currentSession}
+                        setCurrentSession={setCurrentSession}
+                    />
+
+                    <div className="flex-1 flex flex-col">
+                        <Header currentSession={currentSession} />
+                        <ChatArea
+                            currentSession={currentSession}
+                            sessionFiles={sessionFiles}
+                            setSessionFiles={setSessionFiles}
+                            setCurrentSession={setCurrentSession}
+                        />
+                    </div>
+                </div>
+            );
+        }
+
+        // サイドバーコンポーネント
+        function Sidebar({ sessionFiles, setSessionFiles, currentSession, setCurrentSession }) {
+            const [useEnhancedChat, setUseEnhancedChat] = useState(true);
+
+            // セッションファイル一覧を取得（認証なしバージョン）
+            const loadSessionFiles = async () => {
+                if (!currentSession) return;
+
+                try {
+                    console.log('📂 セッションファイル一覧取得中:', currentSession);
+                    // 実際のAPI呼び出しは認証が必要なので、ここではスキップ
+                    // const response = await fetch(`${API_BASE_URL}/session`);
+                    // const data = await response.json();
+                    // setSessionFiles(data.files || []);
+                } catch (error) {
+                    console.error('セッションファイル取得エラー:', error);
+                }
+            };
+
+            useEffect(() => {
+                loadSessionFiles();
+            }, [currentSession]);
+
+            return (
+                <div className="w-80 bg-gray-800 text-white flex flex-col">
+                    <div className="p-4 border-b border-gray-700">
+                        <h2 className="text-lg font-semibold">📁 セッション管理</h2>
+                        <div className="mt-2 text-sm text-gray-300">
+                            {currentSession
+                                ? `現在: ${currentSession.split('-').pop()}`
+                                : '新しいセッション'
+                            }
+                        </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                        <h3 className="text-sm font-medium mb-3">
+                            📄 アップロード済みファイル ({sessionFiles.length})
+                        </h3>
+
+                        {sessionFiles.length > 0 ? (
+                            <div className="space-y-2">
+                                {sessionFiles.map(file => (
+                                    <div key={file.file_id} className="bg-gray-700 p-3 rounded-lg">
+                                        <div className="font-medium truncate text-sm">
+                                            {file.file_name}
+                                        </div>
+                                        <div className="text-xs text-gray-400 mt-1 flex justify-between">
+                                            <span>{(file.size / 1024).toFixed(1)}KB</span>
+                                            <span className={`px-2 py-1 rounded text-xs ${
+                                                file.processing_status === 'success'
+                                                    ? 'bg-green-600 text-green-100'
+                                                    : 'bg-yellow-600 text-yellow-100'
+                                            }`}>
+                                                {file.processing_status === 'success' ? '処理済み' : '処理中'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-sm text-gray-400 text-center py-8">
+                                ファイルをアップロードしてください
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="p-4 border-t border-gray-700">
+                        <label className="flex items-center text-sm">
+                            <input
+                                type="checkbox"
+                                checked={useEnhancedChat}
+                                onChange={(e) => setUseEnhancedChat(e.target.checked)}
+                                className="mr-2"
+                            />
+                            拡張検索（ファイル+KB）
+                        </label>
+
+                        <button
+                            onClick={() => {
+                                setCurrentSession(null);
+                                setSessionFiles([]);
+                            }}
+                            className="mt-3 w-full px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                        >
+                            新しいセッション
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // ヘッダーコンポーネント
+        function Header({ currentSession }) {
+            return (
+                <header className="bg-green-600 text-white p-4 shadow-md">
+                    <div className="flex justify-between items-center">
+                        <div className="flex items-center space-x-4">
+                            <h1 className="text-xl font-bold">🎯 ISK RAG チャットシステム（完全版）</h1>
+                            {currentSession && (
+                                <span className="text-sm bg-yellow-500 px-2 py-1 rounded">
+                                    実ファイル対応
+                                </span>
+                            )}
+                        </div>
+                        <div className="flex items-center space-x-4">
+                            <span className="text-sm">認証: テストモード</span>
+                            <span className="text-sm">Claude Sonnet 4</span>
+                        </div>
+                    </div>
+                </header>
+            );
+        }
+
+        // チャットエリアコンポーネント
+        function ChatArea({ currentSession, sessionFiles, setSessionFiles, setCurrentSession }) {
+            const [messages, setMessages] = useState([
+                {
+                    type: 'system',
+                    content: '🎯 完全版ISK RAGチャットシステム\n\n実際のファイルアップロードとRAG検索機能を搭載:\n• ファイルアップロード → 実際にS3に保存\n• テキスト抽出 → Textract/OCR処理\n• 拡張検索 → ナレッジベース + アップロードファイル',
+                    timestamp: new Date()
+                }
+            ]);
+            const [inputMessage, setInputMessage] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [dragOver, setDragOver] = useState(false);
+            const [uploadProgress, setUploadProgress] = useState([]);
+
+            const messagesEndRef = useRef(null);
+
+            useEffect(() => {
+                scrollToBottom();
+            }, [messages]);
+
+            const scrollToBottom = () => {
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            };
+
+            // 実際のファイルアップロード処理
+            const uploadFilesToBackend = async (files) => {
+                const fileArray = Array.from(files);
+                setUploadProgress(fileArray.map(f => ({ name: f.name, status: 'uploading' })));
+
+                try {
+                    console.log('📤 実際のファイルアップロード開始:', fileArray.length, 'files');
+
+                    // ファイルをBase64に変換
+                    const filesData = await Promise.all(
+                        fileArray.map(file => {
+                            return new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = (e) => {
+                                    const base64Content = e.target.result.split(',')[1];
+                                    resolve({
+                                        filename: file.name,
+                                        content: base64Content,
+                                        contentType: file.type
+                                    });
+                                };
+                                reader.onerror = reject;
+                                reader.readAsDataURL(file);
+                            });
+                        })
+                    );
+
+                    // バックエンドにアップロード（認証なしバージョン）
+                    const response = await fetch(`${API_BASE_URL}/test-file-upload`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            // 'Authorization': token // 認証なしでテスト
+                        },
+                        body: JSON.stringify({
+                            files: filesData
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`アップロードエラー: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+
+                    console.log('✅ ファイルアップロード成功:', data);
+
+                    // セッションIDを設定
+                    if (data.session_id) {
+                        setCurrentSession(data.session_id);
+                    }
+
+                    // ファイル一覧を更新
+                    if (data.uploaded_files) {
+                        setSessionFiles(prev => [...prev, ...data.uploaded_files]);
+                    }
+
+                    // 成功メッセージを表示
+                    const successMessage = {
+                        type: 'system',
+                        content: `✅ ${data.uploaded_files?.length || fileArray.length}個のファイルがアップロードされました！\n\nセッション: ${data.session_id}\n\n${data.uploaded_files?.map(f => `• ${f.filename} (${f.processing_status})`).join('\n') || ''}`,
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, successMessage]);
+
+                } catch (error) {
+                    console.error('❌ ファイルアップロードエラー:', error);
+
+                    const errorMessage = {
+                        type: 'error',
+                        content: `ファイルアップロードに失敗しました: ${error.message}\n\n※認証が必要な可能性があります。`,
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, errorMessage]);
+                } finally {
+                    setUploadProgress([]);
+                }
+            };
+
+            // 拡張チャット送信
+            const sendEnhancedMessage = async (message) => {
+                if (!message.trim()) return;
+
+                const userMessage = {
+                    type: 'user',
+                    content: message,
+                    timestamp: new Date()
+                };
+
+                setMessages(prev => [...prev, userMessage]);
+                setLoading(true);
+
+                try {
+                    // 拡張チャットまたは通常チャットを選択
+                    const endpoint = currentSession ? 'test-enhanced-chat' : 'test-chat';
+                    const requestBody = currentSession
+                        ? {
+                            message: message,
+                            session_id: currentSession,
+                            use_session_files: true
+                          }
+                        : {
+                            message: message
+                          };
+
+                    console.log(`📡 ${endpoint} エンドポイント使用:`, requestBody);
+
+                    const response = await fetch(`${API_BASE_URL}/${endpoint}`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                            // 'Authorization': token // 認証なしでテスト
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    const data = await response.json();
+
+                    const aiMessage = {
+                        type: 'assistant',
+                        content: data.answer,
+                        model: data.model || 'Unknown Model',
+                        sources: data.sources || data.source_links || [],
+                        isEnhanced: !!data.is_hybrid_response,
+                        searchStats: data.search_stats,
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, aiMessage]);
+
+                } catch (error) {
+                    console.error('❌ チャットエラー:', error);
+
+                    const errorMessage = {
+                        type: 'error',
+                        content: `チャットエラー: ${error.message}`,
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, errorMessage]);
+                }
+
+                setLoading(false);
+            };
+
+            // メッセージ送信
+            const sendMessage = async (e) => {
+                e.preventDefault();
+                if (!inputMessage.trim() || loading) return;
+
+                const message = inputMessage;
+                setInputMessage('');
+
+                await sendEnhancedMessage(message);
+            };
+
+            // ファイルドロップ処理
+            const handleFileUpload = async (files) => {
+                if (!files || files.length === 0) return;
+                await uploadFilesToBackend(files);
+            };
+
+            // ドラッグ&ドロップ処理
+            const handleDragOver = (e) => {
+                e.preventDefault();
+                setDragOver(true);
+            };
+
+            const handleDragLeave = (e) => {
+                e.preventDefault();
+                setDragOver(false);
+            };
+
+            const handleDrop = (e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const files = e.dataTransfer.files;
+                handleFileUpload(files);
+            };
+
+            return (
+                <div className="flex-1 flex flex-col">
+                    <div
+                        className={`flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 ${
+                            dragOver ? 'bg-green-50 border-2 border-dashed border-green-400' : ''
+                        }`}
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                    >
+                        {dragOver && (
+                            <div className="fixed inset-0 bg-green-50 bg-opacity-90 flex items-center justify-center z-50 pointer-events-none">
+                                <div className="text-center">
+                                    <div className="text-4xl mb-4">🎯</div>
+                                    <div className="text-2xl font-bold text-green-600">実際にアップロードします</div>
+                                    <div className="text-gray-600 mt-2">PDF, 画像, Office文書, テキストファイル対応</div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* アップロード進捗表示 */}
+                        {uploadProgress.length > 0 && (
+                            <div className="bg-blue-100 border border-blue-300 rounded-lg p-4">
+                                <h4 className="font-medium text-blue-800 mb-2">📤 アップロード中...</h4>
+                                {uploadProgress.map((file, index) => (
+                                    <div key={index} className="flex items-center space-x-2">
+                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div>
+                                        <span className="text-blue-700 text-sm">{file.name}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {messages.map((message, index) => (
+                            <div
+                                key={index}
+                                className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                            >
+                                <div className={`message-bubble p-4 rounded-lg ${
+                                    message.type === 'user'
+                                        ? 'bg-blue-500 text-white'
+                                        : message.type === 'error'
+                                        ? 'bg-red-100 text-red-800 border border-red-300'
+                                        : message.type === 'system'
+                                        ? 'bg-green-100 text-green-800 border border-green-300'
+                                        : 'bg-white border border-gray-200 shadow-sm'
+                                }`}>
+                                    <div className="whitespace-pre-wrap">{message.content}</div>
+
+                                    {/* ソース情報表示 */}
+                                    {message.sources && Array.isArray(message.sources) && message.sources.length > 0 && (
+                                        <div className="mt-3 text-sm">
+                                            <strong>📚 参照ソース:</strong>
+                                            <ul className="list-disc list-inside mt-1 space-y-1">
+                                                {message.sources.slice(0, 3).map((source, idx) => (
+                                                    <li key={idx} className="text-xs">
+                                                        {source.filename && <span className="font-medium">{source.filename}: </span>}
+                                                        {source.content && source.content.substring(0, 100)}...
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+
+                                    {message.model && message.type === 'assistant' && (
+                                        <div className="text-xs opacity-70 mt-2">
+                                            {message.model} {message.isEnhanced && '(拡張RAG)'}
+                                        </div>
+                                    )}
+
+                                    <div className="text-xs opacity-50 mt-2">
+                                        {message.timestamp.toLocaleTimeString()}
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {loading && (
+                            <div className="flex justify-start">
+                                <div className="bg-gray-200 p-4 rounded-lg max-w-md">
+                                    <div className="flex items-center space-x-2">
+                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-green-500 border-t-transparent"></div>
+                                        <span>
+                                            {currentSession
+                                                ? 'ファイル+ナレッジベース検索中...'
+                                                : '無機RAG回答中...'
+                                            }
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    <div className="border-t bg-white p-4">
+                        <div className="flex items-end space-x-3 max-w-6xl mx-auto">
+                            <label className="cursor-pointer">
+                                <input
+                                    type="file"
+                                    multiple
+                                    accept=".pdf,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.docx,.xlsx,.pptx"
+                                    onChange={(e) => handleFileUpload(e.target.files)}
+                                    className="hidden"
+                                />
+                                <div className="flex items-center space-x-2 px-3 py-2 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 text-sm">
+                                    <span>📎</span>
+                                    <span>実ファイル</span>
+                                </div>
+                            </label>
+
+                            <form onSubmit={sendMessage} className="flex-1 flex space-x-2">
+                                <input
+                                    type="text"
+                                    value={inputMessage}
+                                    onChange={(e) => setInputMessage(e.target.value)}
+                                    placeholder={currentSession
+                                        ? "アップロードファイルについて質問..."
+                                        : "完全版RAGに質問してください..."
+                                    }
+                                    className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                                    disabled={loading}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={loading || !inputMessage.trim()}
+                                    className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 font-medium"
+                                >
+                                    送信
+                                </button>
+                            </form>
+                        </div>
+
+                        <div className="max-w-6xl mx-auto mt-2">
+                            <div className="text-xs text-gray-500 text-center">
+                                💡 実際のファイルアップロード機能 - ドラッグ&ドロップまたは📎ボタン
+                                {currentSession && <span className="ml-2 text-green-600">• セッション有効 - 拡張検索可能</span>}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        console.log('📱 ReactDOM.render開始（Step3完全版）');
+        ReactDOM.render(<App />, document.getElementById('root'));
+        console.log('✅ React Step3 (完全版) 初期化完了');
+    </script>
+</body>
+</html>

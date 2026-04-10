@@ -1,0 +1,76 @@
+# CDK
+*.js
+*.js.map
+*.d.ts
+node_modules
+cdk.out
+.cdk.staging
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# AWS
+.aws/
+*.pem
+
+# Credentials
+*accessKeys.csv
+claude-code-user_accessKeys.csv
+*.csv
+**/*.csv
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+
+# Coverage
+coverage/
+
+# Temporary
+tmp/
+temp/
+
+# Lambda deploy artifacts
+lambda/**/deploy.zip
+lambda-layers/**/python/
+lambda-layers/**/*.zip
+
+# Large/binary files
+*.bmp
+*.jpg
+*.zip
+*.xls
+*.xlsx
+
+# CDK outputs
+cdk-outputs.json
+outputs.json
+
+# Claude Code
+.claude/
+.kiro/

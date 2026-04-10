@@ -1,0 +1,1807 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>無機RAG - ISK AI Assistant</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --isk-red: #DC143C;
+            --isk-red-dark: #B91C3C;
+            --isk-red-light: #FEE2E2;
+        }
+
+        .chat-container {
+            height: calc(100vh - 180px);
+        }
+        .sidebar {
+            height: calc(100vh - 80px);
+            min-width: 0;
+            max-width: 320px;
+        }
+        .message-bubble {
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .isk-gradient {
+            background: linear-gradient(135deg, var(--isk-red) 0%, var(--isk-red-dark) 100%);
+        }
+
+        .logo-footer {
+            height: 90px;
+            max-width: 300px;
+            opacity: 0.8;
+        }
+
+        .typing-indicator {
+            display: inline-block;
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background-color: var(--isk-red);
+            margin: 0 1px;
+            animation: typing 1.4s infinite ease-in-out both;
+        }
+        .typing-indicator:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes typing {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        .file-upload-area {
+            border: 2px dashed #d1d5db;
+            transition: all 0.3s ease;
+        }
+        .file-upload-area.dragover {
+            border-color: var(--isk-red);
+            background-color: var(--isk-red-light);
+        }
+
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+        /* スムーズスクロール */
+        .chat-container {
+            scroll-behavior: smooth;
+        }
+        /* メッセージフェードイン */
+        @keyframes messageSlideIn {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message-bubble {
+            animation: messageSlideIn 0.3s ease-out;
+        }
+        /* タイプライター用カーソル */
+        .typing-cursor::after {
+            content: '▌';
+            animation: blink 0.7s infinite;
+            color: #C8102E;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        .chat-history-item {
+            transition: all 0.2s ease;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+        .chat-history-item:hover {
+            background-color: var(--isk-red-light);
+            transform: translateX(2px);
+        }
+        .chat-title {
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            word-break: break-all;
+            hyphens: auto;
+            line-height: 1.3;
+            max-width: 100%;
+            display: block;
+            overflow: hidden;
+        }
+        .chat-preview {
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            word-break: break-all;
+            hyphens: auto;
+            line-height: 1.2;
+            max-width: 100%;
+            display: block;
+            overflow: hidden;
+            max-height: 2.4em;
+            text-overflow: ellipsis;
+        }
+
+        .prompt-textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root">
+        <div class="min-h-screen flex items-center justify-center bg-gray-50">
+            <div class="text-center">
+                <div class="inline-block w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                <p class="text-gray-800">無機RAG システム読み込み中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- AWS SDK -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1542.0.min.js"></script>
+    <script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+
+    <script>
+        // AWS Cognito設定（現在の設定に更新）
+        const CONFIG = {
+            region: 'ap-northeast-1',
+            userPoolId: 'ap-northeast-1_zG065zZXu',
+            userPoolClientId: '320evpoao9264eh5ounfq8c313',
+            apiGatewayUrl: 'https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod/',
+            assetsUrl: 'https://d3hwl9tcru7yod.cloudfront.net/assets/'
+        };
+
+        // AWS設定
+        AWS.config.region = CONFIG.region;
+
+        // Cognito User Pool設定
+        const poolData = {
+            UserPoolId: CONFIG.userPoolId,
+            ClientId: CONFIG.userPoolClientId
+        };
+        const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+
+        // JWT認証管理クラス
+        class AuthManager {
+            constructor() {
+                this.currentUser = null;
+                this.accessToken = null;
+                this.idToken = null;
+            }
+
+            // ログイン
+            signIn(username, password) {
+                return new Promise((resolve, reject) => {
+                    // メールアドレスが入力された場合、@の前をユーザー名として使用
+                    let loginUsername = username;
+                    if (username.includes('@')) {
+                        loginUsername = username.split('@')[0];
+                    }
+
+                    try {
+                        const authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+                            Username: loginUsername,
+                            Password: password,
+                        });
+
+                        const cognitoUser = new AmazonCognitoIdentity.CognitoUser({
+                            Username: loginUsername,
+                            Pool: userPool,
+                        });
+
+                        cognitoUser.authenticateUser(authenticationDetails, {
+                            onSuccess: (result) => {
+                                try {
+                                    this.accessToken = result.getAccessToken().getJwtToken();
+                                    this.idToken = result.getIdToken().getJwtToken();
+                                    this.currentUser = cognitoUser;
+
+                                    const payload = result.getIdToken().payload;
+                                    const userInfo = {
+                                        username: payload['cognito:username'] || loginUsername,
+                                        email: payload.email,
+                                        name: payload.given_name || loginUsername,
+                                        sub: payload.sub
+                                    };
+
+                                    localStorage.setItem('access_token', this.accessToken);
+                                    localStorage.setItem('id_token', this.idToken);
+                                    localStorage.setItem('user_info', JSON.stringify(userInfo));
+                                    resolve(userInfo);
+                                } catch (e) {
+                                    reject(e);
+                                }
+                            },
+                            onFailure: (err) => {
+                                console.error('Auth onFailure:', err);
+                                reject(err);
+                            },
+                            newPasswordRequired: (userAttributes) => {
+                                console.log('newPasswordRequired callback fired');
+                                this._pendingCognitoUser = cognitoUser;
+                                this._pendingUserAttributes = userAttributes;
+                                reject(new Error('__NEW_PASSWORD_REQUIRED__'));
+                            }
+                        });
+                    } catch (e) {
+                        console.error('signIn exception:', e);
+                        reject(e);
+                    }
+                });
+            }
+
+            // ログアウト
+            signOut() {
+                if (this.currentUser) {
+                    this.currentUser.signOut();
+                }
+
+                this.currentUser = null;
+                this.accessToken = null;
+                this.idToken = null;
+                this._pendingCognitoUser = null;
+                this._pendingUserAttributes = null;
+
+                localStorage.removeItem('access_token');
+                localStorage.removeItem('id_token');
+                localStorage.removeItem('user_info');
+            }
+
+            // 新しいパスワードを設定（初回ログイン時）
+            completeNewPassword(newPassword) {
+                return new Promise((resolve, reject) => {
+                    if (!this._pendingCognitoUser) {
+                        reject(new Error('パスワード変更セッションが見つかりません'));
+                        return;
+                    }
+                    this._pendingCognitoUser.completeNewPasswordChallenge(newPassword, {}, {
+                        onSuccess: (result) => {
+                            try {
+                                this.accessToken = result.getAccessToken().getJwtToken();
+                                this.idToken = result.getIdToken().getJwtToken();
+                                this.currentUser = this._pendingCognitoUser;
+                                this._pendingCognitoUser = null;
+
+                                const payload = result.getIdToken().payload;
+                                const userInfo = {
+                                    username: payload['cognito:username'],
+                                    email: payload.email,
+                                    name: payload.given_name || payload['cognito:username'],
+                                    sub: payload.sub
+                                };
+                                localStorage.setItem('access_token', this.accessToken);
+                                localStorage.setItem('id_token', this.idToken);
+                                localStorage.setItem('user_info', JSON.stringify(userInfo));
+                                resolve(userInfo);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        onFailure: (err) => {
+                            reject(err);
+                        }
+                    });
+                });
+            }
+
+            // パスワード変更（ログイン済みユーザー）
+            changePassword(oldPassword, newPassword) {
+                return new Promise((resolve, reject) => {
+                    // 現在のセッションからCognitoUserを取得
+                    const userData = {
+                        Username: this.getCurrentUser()?.username || '',
+                        Pool: userPool,
+                    };
+                    const cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+
+                    // まず現在のパスワードで再認証
+                    const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+                        Username: userData.Username,
+                        Password: oldPassword,
+                    });
+
+                    cognitoUser.authenticateUser(authDetails, {
+                        onSuccess: () => {
+                            cognitoUser.changePassword(oldPassword, newPassword, (err, result) => {
+                                if (err) {
+                                    reject(err);
+                                } else {
+                                    resolve(result);
+                                }
+                            });
+                        },
+                        onFailure: (err) => {
+                            reject(err);
+                        },
+                        newPasswordRequired: () => {
+                            reject(new Error('パスワードリセットが必要です。管理者にお問い合わせください。'));
+                        }
+                    });
+                });
+            }
+
+            // 現在のユーザーを取得
+            getCurrentUser() {
+                const savedToken = localStorage.getItem('id_token');
+                const savedUserInfo = localStorage.getItem('user_info');
+
+                if (savedToken && savedUserInfo) {
+                    this.accessToken = localStorage.getItem('access_token');
+                    this.idToken = savedToken;
+                    return JSON.parse(savedUserInfo);
+                }
+
+                return null;
+            }
+
+            // JWTトークンを取得 (API Gateway認証用にID Tokenを使用)
+            getAccessToken() {
+                return this.idToken || localStorage.getItem('id_token');
+            }
+
+            // 認証済みAPIリクエスト
+            async authenticatedRequest(url, options = {}) {
+                const token = this.getAccessToken();
+                if (!token) {
+                    throw new Error('認証トークンがありません');
+                }
+
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                    ...options.headers
+                };
+
+                return fetch(url, {
+                    ...options,
+                    headers
+                });
+            }
+        }
+
+        // グローバル認証管理インスタンス
+        const authManager = new AuthManager();
+
+        // Markdownリンクを変換するヘルパー関数
+        function convertMarkdownLinks(text) {
+            // [テキスト](URL) 形式のリンクをHTMLリンクに変換
+            return text.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 underline">$1</a>');
+        }
+
+        // メインアプリケーション
+        class App {
+            constructor() {
+                console.log('App constructor started');
+                this.user = null;
+                this.loading = true;
+                this.messages = [];
+                this.isLoading = false;
+                this.currentSession = null;
+                this.sessionFiles = [];
+                this.dragOver = false;
+
+                // 新機能用の状態
+                this.chatHistory = []; // 過去のチャット履歴
+                this.searchQuery = ''; // チャット検索クエリ
+                this.personalPrompt = ''; // 個人システムプロンプト
+                this.deletingChatId = null; // 削除確認中のチャットID
+                this.currentChatId = null; // 現在のチャットセッションID
+                this.commonPrompt = 'あなたは「無機RAG」という名前のISK社内向けAIアシスタントです。\nISKは「Local Insight, Global Impact」をスローガンとする会社です。\n\n以下の特徴で回答してください：\n- 丁寧で親しみやすい日本語で対応\n- 技術的な質問には詳細かつ正確に回答\n- ISKの企業理念を体現した回答'; // 共通プロンプト
+
+                // チャット自動保存用フラグ
+                this.hasAutoSaved = false;
+
+                console.log('App constructor completed, calling init()');
+                this.init();
+            }
+
+            async init() {
+                console.log('App init started');
+                try {
+                    await this.checkAuthState();
+                    console.log('checkAuthState completed');
+                    this.loadChatHistory();
+                    console.log('loadChatHistory completed');
+                    this.loadPersonalPrompt();
+                    console.log('loadPersonalPrompt completed');
+                    this.render();
+                    console.log('render completed');
+                } catch (error) {
+                    console.error('Error in init():', error);
+                }
+            }
+
+            async checkAuthState() {
+                console.log('checkAuthState started');
+                try {
+                    console.log('Getting current user...');
+                    this.user = authManager.getCurrentUser();
+                    console.log('Current user:', this.user);
+                } catch (error) {
+                    console.error('Auth check error:', error);
+                    this.user = null;
+                }
+                console.log('Setting loading to false');
+                this.loading = false;
+                console.log('checkAuthState completed, loading:', this.loading);
+            }
+
+            // チャット履歴を読み込み
+            loadChatHistory() {
+                const saved = localStorage.getItem('chat_history');
+                if (saved) {
+                    this.chatHistory = JSON.parse(saved);
+                } else {
+                    this.chatHistory = [
+                        { id: '1', title: '無機RAGの機能について', date: '2026-04-07', preview: 'ファイルアップロード機能と...' },
+                        { id: '2', title: 'Knowledge Base検索テスト', date: '2026-04-07', preview: '透明性酸化チタンについて...' },
+                        { id: '3', title: '画像処理の質問', date: '2026-04-06', preview: 'アップロードした画像を...' }
+                    ];
+                }
+            }
+
+            // 個人プロンプトを読み込み
+            loadPersonalPrompt() {
+                const saved = localStorage.getItem('personal_prompt');
+                if (saved) {
+                    this.personalPrompt = saved;
+                } else {
+                    this.personalPrompt = '私は研究開発部門に所属しています。\n技術的な回答を希望します。';
+                }
+            }
+
+            // チャット履歴を保存
+            saveChatHistory() {
+                localStorage.setItem('chat_history', JSON.stringify(this.chatHistory));
+            }
+
+            // 現在のチャットを自動保存
+            autoSaveCurrentChat() {
+                console.log(`🔄 autoSaveCurrentChat開始: messages.length=${this.messages.length}, currentChatId=${this.currentChatId}`);
+
+                if (this.messages.length <= 1) {
+                    console.log('📚 システムメッセージのみのため、自動保存をスキップ');
+                    return; // システムメッセージのみの場合は保存しない
+                }
+
+                const userMessages = this.messages.filter(msg => msg.type === 'user');
+                console.log(`📚 ユーザーメッセージ数: ${userMessages.length}`);
+
+                if (userMessages.length === 0) {
+                    console.log('📚 ユーザーメッセージがないため、自動保存をスキップ');
+                    return;
+                }
+
+                // 最初のユーザーメッセージからタイトルを生成
+                const firstUserMessage = userMessages[0].content;
+                const title = firstUserMessage.length > 20
+                    ? firstUserMessage.substring(0, 20) + '...'
+                    : firstUserMessage;
+
+                // プレビューテキストを生成
+                const assistantMessages = this.messages.filter(msg => msg.type === 'assistant');
+                const preview = assistantMessages.length > 0
+                    ? assistantMessages[assistantMessages.length - 1].content.substring(0, 50) + '...'
+                    : firstUserMessage.substring(0, 50) + '...';
+
+                if (this.currentChatId === null) {
+                    // 新しいチャット履歴を作成
+                    this.currentChatId = Date.now().toString();
+                    const newChat = {
+                        id: this.currentChatId,
+                        title: title,
+                        date: new Date().toLocaleDateString('ja-JP'),
+                        preview: preview,
+                        messages: [...this.messages] // メッセージのコピーを保存
+                    };
+
+                    // チャット履歴の先頭に追加
+                    this.chatHistory.unshift(newChat);
+                    console.log(`📚 新しいチャット履歴を作成しました: ${this.currentChatId}`);
+                } else {
+                    // 既存のチャット履歴を更新
+                    const existingChatIndex = this.chatHistory.findIndex(chat => chat.id === this.currentChatId);
+                    if (existingChatIndex !== -1) {
+                        this.chatHistory[existingChatIndex] = {
+                            id: this.currentChatId,
+                            title: title,
+                            date: new Date().toLocaleDateString('ja-JP'),
+                            preview: preview,
+                            messages: [...this.messages] // メッセージのコピーを保存
+                        };
+                        console.log(`📚 既存のチャット履歴を更新しました: ${this.currentChatId}`);
+                    } else {
+                        console.error(`❌ 既存のチャット履歴が見つかりません: ${this.currentChatId}`);
+                    }
+                }
+
+                this.saveChatHistory();
+                this.updateChatHistory();
+
+                console.log('チャット履歴に自動保存しました:', title);
+            }
+
+            // 個人プロンプトを保存
+            savePersonalPrompt() {
+                localStorage.setItem('personal_prompt', this.personalPrompt);
+            }
+
+            // チャット履歴管理メソッド
+            editChatTitle(chatId, event) {
+                event.stopPropagation();
+                const chat = this.chatHistory.find(c => c.id === chatId);
+                if (!chat) return;
+
+                const newTitle = prompt('新しいタイトルを入力してください:', chat.title);
+                if (newTitle && newTitle.trim()) {
+                    chat.title = newTitle.trim();
+                    this.saveChatHistory();
+                    this.updateChatHistory();
+                }
+            }
+
+            // 削除確認状態に切り替え
+            showDeleteConfirm(chatId, event) {
+                event.stopPropagation();
+                this.deletingChatId = chatId;
+                this.updateChatHistory();
+            }
+
+            // 削除を確定
+            confirmDeleteChat(chatId, event) {
+                event.stopPropagation();
+                this.chatHistory = this.chatHistory.filter(c => c.id !== chatId);
+                this.deletingChatId = null;
+                this.saveChatHistory();
+                this.updateChatHistory();
+            }
+
+            // 削除をキャンセル
+            cancelDeleteChat(event) {
+                event.stopPropagation();
+                this.deletingChatId = null;
+                this.updateChatHistory();
+            }
+
+            // loadChatSessionメソッドは下部で実装済み
+
+            // 新しいチャットを開始
+            startNewChat() {
+                // 現在のチャット内容を過去のチャット履歴に保存
+                if (this.messages.length > 1) { // システムメッセージ以外にメッセージがある場合
+                    const userMessages = this.messages.filter(msg => msg.type === 'user');
+                    if (userMessages.length > 0) {
+                        // 最初のユーザーメッセージからタイトルを生成
+                        const firstUserMessage = userMessages[0].content;
+                        const title = firstUserMessage.length > 20
+                            ? firstUserMessage.substring(0, 20) + '...'
+                            : firstUserMessage;
+
+                        // プレビューテキストを生成（最後のアシスタントメッセージまたは最初のユーザーメッセージ）
+                        const assistantMessages = this.messages.filter(msg => msg.type === 'assistant');
+                        const preview = assistantMessages.length > 0
+                            ? assistantMessages[assistantMessages.length - 1].content.substring(0, 50) + '...'
+                            : firstUserMessage.substring(0, 50) + '...';
+
+                        // 新しいチャット履歴アイテムを作成
+                        const newChat = {
+                            id: Date.now().toString(),
+                            title: title,
+                            date: new Date().toLocaleDateString('ja-JP'),
+                            preview: preview,
+                            messages: [...this.messages] // メッセージのコピーを保存
+                        };
+
+                        // チャット履歴の先頭に追加
+                        this.chatHistory.unshift(newChat);
+                        this.saveChatHistory();
+                    }
+                }
+
+                // チャット内容をリセット
+                this.messages = [];
+                this.sessionFiles = [];
+                this.isLoading = false;
+                this.hasAutoSaved = false; // 自動保存フラグをリセット
+                this.currentChatId = null; // 現在のチャットセッションIDをリセット
+                this.updateChatArea();
+                this.updateChatHistory();
+            }
+
+            // チャットエリアを最下部にスクロール
+            scrollToBottom() {
+                setTimeout(() => {
+                    const chatArea = document.getElementById('chatArea');
+                    if (chatArea) {
+                        chatArea.scrollTo({
+                            top: chatArea.scrollHeight,
+                            behavior: 'smooth'
+                        });
+                    }
+                }, 50);
+            }
+
+            // タイプライター効果でテキストを表示
+            async typewriterEffect(msgIndex, fullText) {
+                const chunkSize = 3; // 一度に表示する文字数
+                const delay = 15; // ミリ秒
+
+                for (let i = 0; i < fullText.length; i += chunkSize) {
+                    this.messages[msgIndex].content = fullText.substring(0, i + chunkSize);
+                    this.messages[msgIndex]._typing = (i + chunkSize < fullText.length);
+
+                    // DOM直接更新（全体再描画を避ける）
+                    const msgEl = document.querySelector(`[data-msg-index="${msgIndex}"] .msg-content`);
+                    if (msgEl) {
+                        msgEl.innerHTML = this.formatMessageContent(this.messages[msgIndex].content);
+                        if (this.messages[msgIndex]._typing) {
+                            msgEl.classList.add('typing-cursor');
+                        } else {
+                            msgEl.classList.remove('typing-cursor');
+                        }
+                    } else {
+                        this.updateChatArea();
+                    }
+
+                    this.scrollToBottom();
+                    await new Promise(r => setTimeout(r, delay));
+                }
+
+                this.messages[msgIndex]._typing = false;
+                this.updateChatArea();
+            }
+
+            // メッセージ内容をフォーマット（Markdownリンク変換等）
+            formatMessageContent(content) {
+                return typeof convertMarkdownLinks === 'function'
+                    ? convertMarkdownLinks(content)
+                    : content.replace(/\n/g, '<br>');
+            }
+
+            // チャットエリアのみを更新
+            updateChatArea() {
+                const messagesHtml = this.messages.map((msg, index) => `
+                    <div class="flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}" data-msg-index="${index}">
+                        <div class="message-bubble p-4 rounded-lg ${
+                            msg.type === 'user'
+                                ? 'text-white isk-gradient'
+                                : msg.type === 'error'
+                                ? 'bg-red-100 text-red-800 border border-red-300'
+                                : msg.type === 'system'
+                                ? 'bg-red-50 text-red-800 border border-red-200'
+                                : 'bg-white border border-gray-200 shadow-sm'
+                        }">
+                            <div class="whitespace-pre-wrap msg-content ${msg._typing ? 'typing-cursor' : ''}">${convertMarkdownLinks(msg.content)}</div>
+                            ${msg.document_url ? `
+                                <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded">
+                                    <div class="text-sm text-red-800 mb-2">📄 生成された資料</div>
+                                    <a href="${msg.document_url}" target="_blank"
+                                       class="inline-flex items-center px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors">
+                                        📥 資料をダウンロード
+                                    </a>
+                                    <div class="text-xs text-red-600 mt-1">※ リンクは15分間有効です</div>
+                                </div>
+                            ` : ''}
+                            ${msg.model && msg.type === 'assistant' ? `<div class="text-xs opacity-70 mt-2">${msg.model}</div>` : ''}
+                            <div class="text-xs opacity-50 mt-2">${(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp)).toLocaleTimeString()}</div>
+                        </div>
+                    </div>
+                `).join('');
+
+                const loadingHtml = this.isLoading ? `
+                    <div class="flex justify-start">
+                        <div class="bg-gray-200 p-4 rounded-lg max-w-md">
+                            <div class="flex items-center space-x-2">
+                                <div class="typing-indicator"></div>
+                                <div class="typing-indicator"></div>
+                                <div class="typing-indicator"></div>
+                                <span class="ml-2">無機RAGが回答中...</span>
+                            </div>
+                        </div>
+                    </div>
+                ` : '';
+
+                const sessionFilesHtml = this.sessionFiles.length > 0 ? `
+                    <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                        <h4 class="text-sm font-medium text-red-800 mb-2">📄 アップロード済みファイル (${this.sessionFiles.length})</h4>
+                        <div class="space-y-1">
+                            ${this.sessionFiles.map(file => `
+                                <div class="text-xs text-red-700">
+                                    • ${file.filename} (${Math.round(file.size / 1024)}KB) - ${file.processing_status === 'ready' ? '処理済み' : '処理中'}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : '';
+
+                const chatArea = document.getElementById('chatArea');
+                if (chatArea) {
+                    chatArea.innerHTML = `
+                        ${sessionFilesHtml}
+                        ${messagesHtml}
+                        ${loadingHtml}
+                    `;
+
+                    // 自動スクロール（メッセージ更新時は常に最下部へ）
+                    this.scrollToBottom();
+                }
+            }
+
+            // チャット履歴のレンダリング
+            updateChatHistory() {
+                const container = document.getElementById('chatHistoryContainer');
+                if (!container) return;
+
+                const filteredHistory = this.chatHistory.filter(chat =>
+                    this.searchQuery === '' ||
+                    chat.title.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
+                    chat.preview.toLowerCase().includes(this.searchQuery.toLowerCase())
+                );
+
+                container.innerHTML = `
+                    <h4 class="text-sm font-medium text-gray-600 mb-3">📋 過去のチャット (${filteredHistory.length})</h4>
+                    <div class="space-y-2">
+                        ${filteredHistory.map(chat => `
+                            <div class="chat-history-item p-3 rounded-lg border border-gray-200 group hover:border-red-200">
+                                <div class="flex items-start justify-between">
+                                    <div class="flex-1 cursor-pointer min-w-0" onclick="app.loadChatSession('${chat.id}')">
+                                        <div class="font-medium text-sm text-gray-800 chat-title">${chat.title}</div>
+                                        <div class="text-xs text-gray-500 mt-1">${chat.date}</div>
+                                        <div class="text-xs text-gray-600 mt-1 chat-preview">${chat.preview}</div>
+                                    </div>
+                                    <div class="flex space-x-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        ${chat.id === this.deletingChatId ? `
+                                            <!-- 削除確認中 -->
+                                            <button
+                                                class="p-1 hover:bg-green-100 rounded text-green-600 text-xs"
+                                                onclick="app.confirmDeleteChat('${chat.id}', event)"
+                                                title="削除を確定"
+                                            >✅</button>
+                                            <button
+                                                class="p-1 hover:bg-gray-100 rounded text-gray-600 text-xs"
+                                                onclick="app.cancelDeleteChat(event)"
+                                                title="キャンセル"
+                                            >✖️</button>
+                                        ` : `
+                                            <!-- 通常状態 -->
+                                            <button
+                                                class="p-1 hover:bg-red-100 rounded text-red-600 text-xs"
+                                                onclick="app.editChatTitle('${chat.id}', event)"
+                                                title="名前を編集"
+                                            >✏️</button>
+                                            <button
+                                                class="p-1 hover:bg-red-100 rounded text-red-600 text-xs"
+                                                onclick="app.showDeleteConfirm('${chat.id}', event)"
+                                                title="削除"
+                                            >🗑️</button>
+                                        `}
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            render() {
+                const root = document.getElementById('root');
+
+                if (this.loading) {
+                    root.innerHTML = this.renderLoading();
+                } else if (this.user) {
+                    root.innerHTML = this.renderChat();
+                    this.attachChatEventListeners();
+                } else {
+                    root.innerHTML = this.renderLogin();
+                    this.attachLoginEventListeners();
+                }
+            }
+
+            renderLoading() {
+                return `
+                    <div class="min-h-screen flex items-center justify-center bg-gray-50">
+                        <div class="text-center">
+                            <div class="inline-block w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                            <p class="text-gray-800">無機RAG システムを読み込み中...</p>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderLogin() {
+                return `
+                    <div class="min-h-screen bg-white flex items-center justify-center">
+                        <div class="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg border border-gray-200">
+                            <!-- Header with Title -->
+                            <div class="text-center space-y-4">
+                                <h2 class="text-4xl font-bold text-black">無機RAG</h2>
+                                <p class="text-gray-600">ISK社内向け高性能AIチャットシステム</p>
+                            </div>
+
+                            <form id="loginForm" class="space-y-6" autocomplete="off">
+                                <div>
+                                    <label class="block text-sm font-medium text-black mb-2">
+                                        ユーザー名 または メールアドレス
+                                    </label>
+                                    <input
+                                        type="text"
+                                        id="username"
+                                        class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                        placeholder="y-hasegawa または y-hasegawa@iskweb.co.jp"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-black mb-2">
+                                        パスワード
+                                    </label>
+                                    <input
+                                        type="password"
+                                        id="password"
+                                        class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                        placeholder="パスワード"
+                                        required
+                                    />
+                                </div>
+                                <div id="loginError" class="hidden bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg"></div>
+                                <button
+                                    type="submit"
+                                    id="loginButton"
+                                    class="w-full py-3 px-4 text-white rounded-lg hover:opacity-90 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all isk-gradient"
+                                >
+                                    ログイン
+                                </button>
+                            </form>
+
+                            <!-- ISK Logo at bottom -->
+                            <div class="flex justify-center mt-6">
+                                <img src="${CONFIG.assetsUrl}isk-logo.png" alt="ISK Logo" class="logo-footer opacity-60">
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderChat() {
+                const messagesHtml = this.messages.map((msg, index) => `
+                    <div class="flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}" data-msg-index="${index}">
+                        <div class="message-bubble p-4 rounded-lg ${
+                            msg.type === 'user'
+                                ? 'text-white isk-gradient'
+                                : msg.type === 'error'
+                                ? 'bg-red-100 text-red-800 border border-red-300'
+                                : msg.type === 'system'
+                                ? 'bg-red-50 text-red-800 border border-red-200'
+                                : 'bg-white border border-gray-200 shadow-sm'
+                        }">
+                            <div class="whitespace-pre-wrap msg-content ${msg._typing ? 'typing-cursor' : ''}">${convertMarkdownLinks(msg.content)}</div>
+                            ${msg.document_url ? `
+                                <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded">
+                                    <div class="text-sm text-red-800 mb-2">📄 生成された資料</div>
+                                    <a href="${msg.document_url}" target="_blank"
+                                       class="inline-flex items-center px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors">
+                                        📥 資料をダウンロード
+                                    </a>
+                                    <div class="text-xs text-red-600 mt-1">※ リンクは15分間有効です</div>
+                                </div>
+                            ` : ''}
+                            ${msg.model && msg.type === 'assistant' ? `<div class="text-xs opacity-70 mt-2">${msg.model}</div>` : ''}
+                            <div class="text-xs opacity-50 mt-2">${(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp)).toLocaleTimeString()}</div>
+                        </div>
+                    </div>
+                `).join('');
+
+                const loadingHtml = this.isLoading ? `
+                    <div class="flex justify-start">
+                        <div class="bg-gray-200 p-4 rounded-lg max-w-md">
+                            <div class="flex items-center space-x-2">
+                                <div class="typing-indicator"></div>
+                                <div class="typing-indicator"></div>
+                                <div class="typing-indicator"></div>
+                                <span class="ml-2">無機RAGが回答中...</span>
+                            </div>
+                        </div>
+                    </div>
+                ` : '';
+
+                const sessionFilesHtml = this.sessionFiles.length > 0 ? `
+                    <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                        <h4 class="text-sm font-medium text-red-800 mb-2">📄 アップロード済みファイル (${this.sessionFiles.length})</h4>
+                        <div class="space-y-1">
+                            ${this.sessionFiles.map(file => `
+                                <div class="text-xs text-red-700">
+                                    • ${file.filename} (${Math.round(file.size / 1024)}KB) - ${file.processing_status === 'ready' ? '処理済み' : '処理中'}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : '';
+
+                // 検索フィルタ済みチャット履歴
+                const filteredHistory = this.chatHistory.filter(chat =>
+                    this.searchQuery === '' ||
+                    chat.title.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
+                    chat.preview.toLowerCase().includes(this.searchQuery.toLowerCase())
+                );
+
+                return `
+                    <div class="min-h-screen bg-gray-50 flex flex-col">
+                        <!-- Header (全体を貫通) -->
+                        <header class="isk-gradient text-white p-4 shadow-md">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <h1 class="text-xl font-bold">無機RAG - ISK AI Assistant</h1>
+                                    <p class="text-sm opacity-80">高機能版 | Local Insight, Global Impact</p>
+                                </div>
+                                <div class="flex items-center space-x-4">
+                                    <span class="text-sm">ユーザー: ${this.user.name || this.user.username}</span>
+                                </div>
+                            </div>
+                        </header>
+
+                        <!-- メインコンテンツエリア -->
+                        <div class="flex-1 flex">
+                            <!-- 左サイドバー: チャット履歴 -->
+                            <div class="w-80 bg-white border-r border-gray-200 flex flex-col sidebar flex-shrink-0 overflow-hidden">
+                            <!-- 新しいチャット・検索窓 -->
+                            <div class="p-4 border-b border-gray-200">
+                                <!-- 新しいチャットボタン -->
+                                <button
+                                    id="newChatButton"
+                                    class="w-full mb-3 px-4 py-2 text-white rounded-lg hover:opacity-90 text-sm isk-gradient flex items-center justify-center space-x-2"
+                                >
+                                    <span class="text-white font-bold">+</span>
+                                    <span>新しいチャット</span>
+                                </button>
+
+                                <h3 class="text-lg font-semibold text-gray-800 mb-3">🔍 チャット検索</h3>
+                                <!-- ブラウザ自動入力吸収用ダミー -->
+                                <input type="text" name="dummy-autofill-trap" style="display:none" tabindex="-1" aria-hidden="true">
+                                <input type="password" name="dummy-pw-trap" style="display:none" tabindex="-1" aria-hidden="true">
+                                <input
+                                    type="search"
+                                    id="chatSearchInput"
+                                    placeholder="過去のチャットを検索..."
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 text-sm"
+                                    autocomplete="off"
+                                    name="chat-search-no-autofill"
+                                    value=""
+                                    readonly
+                                />
+                            </div>
+
+                            <!-- チャット履歴 -->
+                            <div class="flex-1 overflow-y-auto custom-scrollbar">
+                                <div class="p-4" id="chatHistoryContainer">
+                                    <!-- チャット履歴はJavaScriptで動的更新 -->
+                                </div>
+                            </div>
+
+                            <!-- 設定・ログアウト -->
+                            <div class="p-4 border-t border-gray-200 space-y-2">
+                                <button
+                                    id="settingsButton"
+                                    class="w-full px-4 py-2 text-left text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                                >
+                                    ⚙️ 設定
+                                </button>
+                                <button
+                                    id="logoutButton"
+                                    class="w-full px-4 py-2 text-left text-gray-700 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors"
+                                >
+                                    🚪 ログアウト
+                                </button>
+                            </div>
+                        </div>
+
+                            <!-- 中央: メインチャットエリア -->
+                            <div class="flex-1 flex flex-col">
+
+                            <!-- Chat Area -->
+                            <div class="flex-1 chat-container overflow-y-auto p-6 space-y-4 bg-white ${this.dragOver ? 'file-upload-area dragover' : ''}"
+                                 id="chatArea">
+
+                                ${sessionFilesHtml}
+                                ${messagesHtml}
+                                ${loadingHtml}
+                            </div>
+
+                            <!-- Input Area -->
+                            <footer class="border-t border-gray-200 bg-white p-4 shadow-lg">
+                                <form id="chatForm" class="flex space-x-3">
+                                    <!-- File Upload Button -->
+                                    <label class="cursor-pointer">
+                                        <input
+                                            type="file"
+                                            id="fileInput"
+                                            multiple
+                                            accept=".pdf,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.docx,.xlsx,.pptx"
+                                            class="hidden"
+                                        />
+                                        <div class="flex items-center space-x-2 px-3 py-3 bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 text-sm">
+                                            <span>📎</span>
+                                            <span>ファイル</span>
+                                        </div>
+                                    </label>
+
+                                    <input
+                                        type="text"
+                                        id="messageInput"
+                                        placeholder="無機RAGに質問やお手伝いを依頼してください..."
+                                        class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                        ${this.isLoading ? 'disabled' : ''}
+                                    />
+                                    <button
+                                        type="submit"
+                                        id="sendButton"
+                                        class="px-6 py-3 text-white rounded-lg hover:opacity-90 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all isk-gradient"
+                                        ${this.isLoading ? 'disabled' : ''}
+                                    >
+                                        送信
+                                    </button>
+                                </form>
+
+                                <div class="text-xs text-gray-500 text-center mt-2">
+                                    💡 ファイルをドラッグ&ドロップするか、📎ボタンでアップロード | Local Insight, Global Impact
+                                </div>
+
+                            </footer>
+                        </div>
+
+                        <!-- 右サイドバー: プロンプト設定 -->
+                        <div class="w-96 bg-white border-l border-gray-200 flex flex-col sidebar">
+                            <!-- 個人システムプロンプト -->
+                            <div class="p-4 border-b border-gray-200">
+                                <h3 class="text-lg font-semibold text-gray-800 mb-3">👤 個人システムプロンプト</h3>
+                                <textarea
+                                    id="personalPromptTextarea"
+                                    class="prompt-textarea w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 text-sm"
+                                    placeholder="あなた専用のシステムプロンプトを入力..."
+                                >${this.personalPrompt}</textarea>
+                                <button
+                                    id="savePersonalPromptButton"
+                                    class="mt-2 px-4 py-2 text-white rounded-lg hover:opacity-90 text-sm isk-gradient"
+                                >
+                                    個人プロンプトを保存
+                                </button>
+                            </div>
+
+                            <!-- 共通プロンプト -->
+                            <div class="flex-1 p-4">
+                                <h3 class="text-lg font-semibold text-gray-800 mb-3">🏢 共通システムプロンプト</h3>
+                                <div class="bg-gray-50 p-3 rounded-lg border text-sm text-gray-700 h-64 overflow-y-auto custom-scrollbar">
+                                    <div class="whitespace-pre-wrap">${this.commonPrompt}</div>
+                                </div>
+                                <div class="mt-3 text-xs text-gray-500">
+                                    ※ 共通プロンプトは全ユーザー共通の設定です
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            attachLoginEventListeners() {
+                const form = document.getElementById('loginForm');
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await this.handleLogin();
+                });
+            }
+
+            attachChatEventListeners() {
+                const form = document.getElementById('chatForm');
+                const logoutButton = document.getElementById('logoutButton');
+                const fileInput = document.getElementById('fileInput');
+                const chatSearchInput = document.getElementById('chatSearchInput');
+                const newChatButton = document.getElementById('newChatButton');
+                const personalPromptTextarea = document.getElementById('personalPromptTextarea');
+                const savePersonalPromptButton = document.getElementById('savePersonalPromptButton');
+                const settingsButton = document.getElementById('settingsButton');
+
+                // 初期表示でチャット履歴を更新
+                this.updateChatHistory();
+
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await this.handleSendMessage();
+                });
+
+                logoutButton.addEventListener('click', () => {
+                    this.handleLogout();
+                });
+
+                fileInput.addEventListener('change', (e) => {
+                    this.handleFileUpload(e.target.files);
+                });
+
+                // チャット検索 - オートコンプリートを強制クリア
+                chatSearchInput.value = this.searchQuery || '';
+                chatSearchInput.addEventListener('input', (e) => {
+                    this.searchQuery = e.target.value;
+                    this.updateChatHistory();
+                });
+
+                // 新しいチャット
+                newChatButton.addEventListener('click', () => {
+                    this.startNewChat();
+                });
+
+                // 個人プロンプト保存
+                savePersonalPromptButton.addEventListener('click', () => {
+                    this.personalPrompt = personalPromptTextarea.value;
+                    this.savePersonalPrompt();
+                    alert('個人プロンプトを保存しました');
+                });
+
+                // 設定ボタン → パスワード変更モーダル
+                settingsButton.addEventListener('click', () => {
+                    this.showSettingsModal();
+                });
+
+                // ブラウザのオートコンプリートを遅延クリア
+                const clearAutofill = () => {
+                    const searchInput = document.getElementById('chatSearchInput');
+                    if (searchInput && !this.searchQuery) {
+                        searchInput.value = '';
+                    }
+                };
+                setTimeout(clearAutofill, 50);
+                setTimeout(clearAutofill, 200);
+                setTimeout(clearAutofill, 500);
+                setTimeout(clearAutofill, 1000);
+                setTimeout(() => {
+                    clearAutofill();
+                    // readonlyを解除して入力可能にする
+                    const searchInput = document.getElementById('chatSearchInput');
+                    if (searchInput) searchInput.removeAttribute('readonly');
+                }, 2000);
+
+                // ドラッグ&ドロップのイベントリスナーを追加
+                let dragLeaveTimer = null;
+                let dragOverTimer = null;
+
+                // ウィンドウ全体でのドラッグイベントを監視
+                document.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!this.dragOver) {
+                        this.dragOver = true;
+                        this.updateDragOverlay();
+                    }
+                    // タイマーをクリア（まだウィンドウ内にいる）
+                    if (dragLeaveTimer) {
+                        clearTimeout(dragLeaveTimer);
+                        dragLeaveTimer = null;
+                    }
+
+                    // dragoverタイマーをリセット（安全策として）
+                    if (dragOverTimer) {
+                        clearTimeout(dragOverTimer);
+                    }
+                    dragOverTimer = setTimeout(() => {
+                        // 300ms間dragoverイベントが発生しない場合はオーバーレイを隠す
+                        if (this.dragOver) {
+                            this.dragOver = false;
+                            this.updateDragOverlay();
+                        }
+                        dragOverTimer = null;
+                    }, 300);
+                });
+
+                document.addEventListener('dragenter', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+
+                document.addEventListener('dragleave', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    // ウィンドウの境界を越えた場合の判定（より確実な方法）
+                    const isOutsideWindow = (
+                        e.clientX < 0 ||                    // 左境界
+                        e.clientX > window.innerWidth ||    // 右境界
+                        e.clientY < 0 ||                    // 上境界
+                        e.clientY > window.innerHeight      // 下境界
+                    );
+
+                    // relatedTargetがnullまたはウィンドウ外の座標の場合
+                    if (e.relatedTarget === null || isOutsideWindow) {
+                        // 短い遅延を設けてからオーバーレイを隠す
+                        if (dragLeaveTimer) {
+                            clearTimeout(dragLeaveTimer);
+                        }
+                        dragLeaveTimer = setTimeout(() => {
+                            if (this.dragOver) {
+                                this.dragOver = false;
+                                this.updateDragOverlay();
+                            }
+                            dragLeaveTimer = null;
+                        }, 100); // 100ms の遅延（右側境界での安定性向上）
+                    }
+                });
+
+                document.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    // 全てのタイマーをクリア
+                    if (dragLeaveTimer) {
+                        clearTimeout(dragLeaveTimer);
+                        dragLeaveTimer = null;
+                    }
+                    if (dragOverTimer) {
+                        clearTimeout(dragOverTimer);
+                        dragOverTimer = null;
+                    }
+
+                    this.dragOver = false;
+                    this.updateDragOverlay();
+
+                    // ファイルがドロップされた場合のみアップロード処理
+                    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        const files = e.dataTransfer.files;
+                        this.handleFileUpload(files);
+                    }
+                });
+            }
+
+            async handleLogin() {
+                const email = document.getElementById('username').value.trim();
+                const password = document.getElementById('password').value.trim();
+                const loginButton = document.getElementById('loginButton');
+                const errorDiv = document.getElementById('loginError');
+
+                if (!email || !password) return;
+
+                loginButton.disabled = true;
+                loginButton.innerHTML = '<div class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>認証中...';
+                errorDiv.classList.add('hidden');
+
+                try {
+                    // メールアドレスでログイン試行（10秒タイムアウト付き）
+                    const loginPromise = authManager.signIn(email, password);
+                    const timeoutPromise = new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('認証がタイムアウトしました。ブラウザのコンソール(F12)でエラーを確認してください。')), 10000)
+                    );
+                    this.user = await Promise.race([loginPromise, timeoutPromise]);
+                    console.log('Login successful:', this.user);
+
+                    // ウェルカムメッセージを追加
+                    this.messages = [{
+                        type: 'system',
+                        content: `🎉 ようこそ、${this.user.name || this.user.username}さん！\n\n無機RAG - ISK AI Assistant（高機能版）へログインしました。\n\n【新機能】\n• 📋 左パネル: 過去のチャット履歴・検索機能\n• 👤 右パネル: 個人・共通システムプロンプト設定\n• 📎 ファイルアップロード: ドラッグ&ドロップ対応\n• 🔍 ハイブリッド検索: Knowledge Base + アップロードファイル\n\n「Local Insight, Global Impact」の精神で、最高のサポートを提供します。`,
+                        timestamp: new Date()
+                    }];
+
+                    this.render();
+                } catch (error) {
+                    console.error('Login error:', error);
+
+                    // 初回ログイン時のパスワード変更チャレンジ
+                    if (error.message === '__NEW_PASSWORD_REQUIRED__') {
+                        this.showNewPasswordForm(email);
+                        return;
+                    }
+
+                    let errorMessage = 'ログインに失敗しました。';
+
+                    if (error.code === 'UserNotConfirmedException') {
+                        errorMessage = 'アカウントが確認されていません。管理者にお問い合わせください。';
+                    } else if (error.code === 'NotAuthorizedException') {
+                        errorMessage = 'メールアドレスまたはパスワードが正しくありません。';
+                    } else if (error.code === 'UserNotFoundException') {
+                        errorMessage = 'ユーザーが存在しません。';
+                    } else if (error.message) {
+                        errorMessage = `認証エラー: ${error.message}`;
+                    }
+
+                    errorDiv.textContent = errorMessage;
+                    errorDiv.classList.remove('hidden');
+                } finally {
+                    loginButton.disabled = false;
+                    loginButton.textContent = 'ログイン';
+                }
+            }
+
+            // 初回ログイン時のパスワード変更フォームを表示
+            showNewPasswordForm(username) {
+                const container = document.getElementById('root');
+                container.innerHTML = `
+                <div class="min-h-screen flex items-center justify-center" style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);">
+                    <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                        <div class="text-center mb-6">
+                            <div style="color: #C8102E; font-size: 28px; font-weight: bold;">ISK</div>
+                            <div class="text-gray-500 text-sm mt-1">Local Insight, Global Impact</div>
+                            <h2 class="text-xl font-bold mt-4 text-gray-800">🔐 パスワード変更</h2>
+                            <p class="text-sm text-gray-600 mt-2">初回ログインのため、新しいパスワードを設定してください。</p>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">新しいパスワード</label>
+                                <input type="password" id="newPassword" placeholder="8文字以上（大小英数字を含む）"
+                                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">パスワード確認</label>
+                                <input type="password" id="confirmPassword" placeholder="もう一度入力してください"
+                                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                            </div>
+                            <div id="newPwError" class="text-red-600 text-sm hidden"></div>
+                            <button id="newPwButton" onclick="app.handleNewPassword('${username}')"
+                                class="w-full py-3 text-white font-bold rounded-lg transition-all"
+                                style="background-color: #C8102E;">
+                                パスワードを変更してログイン
+                            </button>
+                        </div>
+                        <div class="mt-4 text-xs text-gray-500 text-center">
+                            パスワード要件: 8文字以上、大文字・小文字・数字を含む
+                        </div>
+                    </div>
+                </div>`;
+
+                document.getElementById('newPassword').focus();
+                // Enterキーで送信
+                document.getElementById('confirmPassword').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') app.handleNewPassword(username);
+                });
+            }
+
+            // 新しいパスワードを設定
+            async handleNewPassword(username) {
+                const newPw = document.getElementById('newPassword').value;
+                const confirmPw = document.getElementById('confirmPassword').value;
+                const errorDiv = document.getElementById('newPwError');
+                const button = document.getElementById('newPwButton');
+
+                errorDiv.classList.add('hidden');
+
+                if (newPw.length < 8) {
+                    errorDiv.textContent = 'パスワードは8文字以上にしてください。';
+                    errorDiv.classList.remove('hidden');
+                    return;
+                }
+                if (newPw !== confirmPw) {
+                    errorDiv.textContent = 'パスワードが一致しません。';
+                    errorDiv.classList.remove('hidden');
+                    return;
+                }
+
+                button.disabled = true;
+                button.innerHTML = '<div class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>変更中...';
+
+                try {
+                    this.user = await authManager.completeNewPassword(newPw);
+                    console.log('Password changed successfully');
+
+                    this.messages = [{
+                        type: 'system',
+                        content: `🎉 パスワードが変更されました！\n\nようこそ、${this.user.name || this.user.username}さん！\n無機RAG - ISK AI Assistantへログインしました。`,
+                        timestamp: new Date()
+                    }];
+                    this.render();
+                } catch (error) {
+                    console.error('Password change error:', error);
+                    errorDiv.textContent = `パスワード変更エラー: ${error.message || 'もう一度お試しください'}`;
+                    errorDiv.classList.remove('hidden');
+                    button.disabled = false;
+                    button.textContent = 'パスワードを変更してログイン';
+                }
+            }
+
+            // 設定モーダル表示
+            showSettingsModal() {
+                // 既存のモーダルがあれば削除
+                const existing = document.getElementById('settingsModal');
+                if (existing) existing.remove();
+
+                const closeModal = () => {
+                    const m = document.getElementById('settingsModal');
+                    if (m) m.remove();
+                    // モーダル閉じた後に検索欄をクリア
+                    const searchInput = document.getElementById('chatSearchInput');
+                    if (searchInput) {
+                        searchInput.value = this.searchQuery || '';
+                        searchInput.setAttribute('readonly', '');
+                        setTimeout(() => {
+                            searchInput.value = this.searchQuery || '';
+                            searchInput.removeAttribute('readonly');
+                        }, 500);
+                    }
+                };
+
+                const modal = document.createElement('div');
+                modal.id = 'settingsModal';
+                modal.className = 'fixed inset-0 flex items-center justify-center z-50';
+                modal.style.backgroundColor = 'rgba(0,0,0,0.5)';
+                modal.innerHTML = `
+                    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-gray-800">⚙️ 設定</h2>
+                            <button id="closeSettingsModal" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+                        </div>
+
+                        <div class="border-t pt-4">
+                            <h3 class="text-lg font-semibold text-gray-800 mb-3">🔐 パスワード変更</h3>
+                            <form autocomplete="off" onsubmit="return false;">
+                            <input type="text" style="display:none" tabindex="-1" aria-hidden="true">
+                            <input type="password" style="display:none" tabindex="-1" aria-hidden="true">
+                            <div class="space-y-3">
+                                <input type="password" id="currentPasswordInput" placeholder="現在のパスワード" autocomplete="new-password"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">
+                                <input type="password" id="newPasswordInput" placeholder="新しいパスワード（8文字以上）" autocomplete="new-password"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">
+                                <input type="password" id="confirmNewPasswordInput" placeholder="新しいパスワード（確認）" autocomplete="new-password"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">
+                                <div id="passwordChangeMessage" class="text-sm hidden"></div>
+                                <button id="changePasswordButton" type="button"
+                                    class="w-full px-4 py-2 text-white rounded-lg hover:opacity-90 text-sm isk-gradient">
+                                    パスワードを変更
+                                </button>
+                            </div>
+                            </form>
+                        </div>
+
+                        <div class="border-t mt-4 pt-4 text-xs text-gray-500">
+                            パスワード要件: 8文字以上、大文字・小文字・数字を含む
+                        </div>
+                    </div>
+                `;
+
+                document.body.appendChild(modal);
+
+                // イベント設定
+                document.getElementById('closeSettingsModal').addEventListener('click', closeModal);
+                modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+                document.getElementById('changePasswordButton').addEventListener('click', () => this.handleChangePassword());
+            }
+
+            // 設定画面からのパスワード変更
+            async handleChangePassword() {
+                const currentPw = document.getElementById('currentPasswordInput').value;
+                const newPw = document.getElementById('newPasswordInput').value;
+                const confirmPw = document.getElementById('confirmNewPasswordInput').value;
+                const msgDiv = document.getElementById('passwordChangeMessage');
+                const button = document.getElementById('changePasswordButton');
+
+                msgDiv.classList.add('hidden');
+
+                if (!currentPw || !newPw || !confirmPw) {
+                    msgDiv.textContent = '全ての項目を入力してください。';
+                    msgDiv.className = 'text-sm text-red-600';
+                    msgDiv.classList.remove('hidden');
+                    return;
+                }
+                if (newPw.length < 8) {
+                    msgDiv.textContent = 'パスワードは8文字以上にしてください。';
+                    msgDiv.className = 'text-sm text-red-600';
+                    msgDiv.classList.remove('hidden');
+                    return;
+                }
+                if (newPw !== confirmPw) {
+                    msgDiv.textContent = '新しいパスワードが一致しません。';
+                    msgDiv.className = 'text-sm text-red-600';
+                    msgDiv.classList.remove('hidden');
+                    return;
+                }
+
+                button.disabled = true;
+                button.textContent = '変更中...';
+
+                try {
+                    await authManager.changePassword(currentPw, newPw);
+                    msgDiv.textContent = '✅ パスワードを変更しました。';
+                    msgDiv.className = 'text-sm text-green-600';
+                    msgDiv.classList.remove('hidden');
+                    document.getElementById('currentPasswordInput').value = '';
+                    document.getElementById('newPasswordInput').value = '';
+                    document.getElementById('confirmNewPasswordInput').value = '';
+                } catch (error) {
+                    let msg = 'パスワード変更に失敗しました。';
+                    if (error.code === 'NotAuthorizedException') {
+                        msg = '現在のパスワードが正しくありません。';
+                    } else if (error.code === 'InvalidPasswordException') {
+                        msg = 'パスワード要件を満たしていません（大文字・小文字・数字を含む8文字以上）。';
+                    } else if (error.message) {
+                        msg = error.message;
+                    }
+                    msgDiv.textContent = msg;
+                    msgDiv.className = 'text-sm text-red-600';
+                    msgDiv.classList.remove('hidden');
+                } finally {
+                    button.disabled = false;
+                    button.textContent = 'パスワードを変更';
+                }
+            }
+
+            handleLogout() {
+                authManager.signOut();
+                this.user = null;
+                this.messages = [];
+                this.currentSession = null;
+                this.sessionFiles = [];
+                this.dragOver = false;
+
+                // ドラッグオーバーレイをクリーンアップ
+                const existingOverlay = document.getElementById('dragOverlay');
+                if (existingOverlay) {
+                    existingOverlay.remove();
+                }
+
+                this.render();
+            }
+
+            // チャットセッションを読み込み
+            loadChatSession(chatId) {
+                const chat = this.chatHistory.find(c => c.id === chatId);
+                if (chat && chat.messages) {
+                    // 保存されたメッセージを復元
+                    this.messages = [
+                        {
+                            type: 'system',
+                            content: `📋 チャット "${chat.title}" を読み込みました\n\n履歴データ復元完了 - ${chat.messages.length}件のメッセージ`,
+                            timestamp: new Date()
+                        },
+                        ...chat.messages
+                    ];
+
+                    // セッションファイルがあれば復元（今回はファイルは復元しない）
+                    this.sessionFiles = [];
+
+                    // 現在のチャットIDを設定し、自動保存フラグを有効にする
+                    this.currentChatId = chatId;
+                    this.hasAutoSaved = true; // 既存のチャット履歴なので保存済み
+
+                    this.updateChatArea();
+
+                    // スクロールはupdateChatArea()内で自動実行される
+                } else {
+                    // チャットが見つからない場合
+                    this.messages = [
+                        {
+                            type: 'error',
+                            content: `エラー: チャット履歴 "${chatId}" が見つかりませんでした。`,
+                            timestamp: new Date()
+                        }
+                    ];
+                    this.currentChatId = null; // エラー時は現在のチャットIDをリセット
+                    this.hasAutoSaved = false;
+                    this.updateChatArea();
+                }
+            }
+
+            // ドラッグオーバーレイの表示/非表示を切り替え（ちらつき防止）
+            updateDragOverlay() {
+                const existingOverlay = document.getElementById('dragOverlay');
+
+                if (this.dragOver) {
+                    // オーバーレイが存在しない場合のみ作成
+                    if (!existingOverlay) {
+                        const overlay = document.createElement('div');
+                        overlay.id = 'dragOverlay';
+                        overlay.className = 'fixed inset-0 flex items-center justify-center z-50 pointer-events-none';
+                        overlay.style.cssText = 'background-color: rgba(220, 20, 60, 0.1); backdrop-filter: blur(2px);';
+
+                        overlay.innerHTML = `
+                            <div class="text-center p-8 rounded-xl" style="background-color: rgba(220, 20, 60, 0.95); color: white; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);">
+                                <div class="text-6xl mb-4">📁</div>
+                                <div class="text-3xl font-bold mb-2">ファイルをここにドロップ</div>
+                                <div class="text-lg opacity-90">PDF, 画像, Office文書, テキストファイルに対応</div>
+                                <div class="text-sm mt-2 opacity-75">ドラッグしたファイルを離してください</div>
+                            </div>
+                        `;
+
+                        document.body.appendChild(overlay);
+                    }
+                } else {
+                    // オーバーレイを削除
+                    if (existingOverlay) {
+                        existingOverlay.remove();
+                    }
+                }
+            }
+
+            // ファイルアップロード処理
+            async handleFileUpload(files) {
+                if (!files || files.length === 0) return;
+
+                // 二重アップロード防止
+                if (this._uploading) return;
+                this._uploading = true;
+
+                console.log('ファイルアップロード開始:', files);
+
+                try {
+                    const fileArray = Array.from(files);
+
+                    // ファイルをBase64に変換
+                    const filesData = await Promise.all(
+                        fileArray.map(file => {
+                            return new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = (e) => {
+                                    const base64Content = e.target.result.split(',')[1];
+                                    resolve({
+                                        filename: file.name,
+                                        content: base64Content,
+                                        contentType: file.type
+                                    });
+                                };
+                                reader.onerror = reject;
+                                reader.readAsDataURL(file);
+                            });
+                        })
+                    );
+
+                    // 認証付きファイルアップロード
+                    const response = await authManager.authenticatedRequest(`${CONFIG.apiGatewayUrl}/file-upload`, {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            files: filesData
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`アップロードエラー: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+
+                    console.log('✅ ファイルアップロード成功:', data);
+
+                    // セッションIDを設定
+                    if (data.session_id) {
+                        this.currentSession = data.session_id;
+                    }
+
+                    // ファイル一覧を更新
+                    if (data.uploaded_files) {
+                        this.sessionFiles = [...this.sessionFiles, ...data.uploaded_files];
+                    }
+
+                    // 成功メッセージを表示
+                    this.messages.push({
+                        type: 'system',
+                        content: `✅ ${data.uploaded_files?.length || fileArray.length}個のファイルがアップロードされました！\n\nセッション: ${data.session_id}\n\n${data.uploaded_files?.map(f => `• ${f.filename} (${f.processing_status})`).join('\n') || ''}`,
+                        timestamp: new Date()
+                    });
+
+                    this.updateChatArea();
+                    this.autoSaveCurrentChat();
+
+                } catch (error) {
+                    console.error('ファイルアップロードエラー:', error);
+
+                    this.messages.push({
+                        type: 'error',
+                        content: `ファイルアップロードに失敗しました: ${error.message}`,
+                        timestamp: new Date()
+                    });
+
+                    this.updateChatArea();
+                } finally {
+                    this._uploading = false;
+                }
+            }
+
+            async handleSendMessage() {
+                const input = document.getElementById('messageInput');
+                const message = input.value.trim();
+
+                if (!message || this.isLoading) return;
+
+                // ユーザーメッセージを追加
+                this.messages.push({
+                    type: 'user',
+                    content: message,
+                    timestamp: new Date()
+                });
+
+                // チャット履歴の自動保存（メッセージ送信のたびに実行）
+                const userMessageCount = this.messages.filter(msg => msg.type === 'user').length;
+                console.log(`🔍 自動保存チェック: userMessageCount=${userMessageCount}, currentChatId=${this.currentChatId}`);
+
+                if (userMessageCount >= 1) {
+                    console.log('📚 チャット履歴を自動保存します（メッセージ送信時の継続更新）');
+                    // 現在のチャットを過去の履歴に自動保存または更新
+                    this.autoSaveCurrentChat();
+                } else {
+                    console.log(`📚 自動保存の条件に満たないため、スキップします（メッセージ数: ${userMessageCount}）`);
+                }
+
+                input.value = '';
+                this.isLoading = true;
+                this.updateChatArea();
+
+                try {
+                    // 本格的なRAGチャット機能を使用（S3リンク表示対応）
+                    const endpoint = 'test-enhanced-chat';
+                    const requestBody = {
+                        message: message,
+                        personal_prompt: this.personalPrompt, // 個人プロンプトを含める
+                        session_id: this.currentSession || null // アップロードファイル参照用
+                    };
+
+                    const fullUrl = `${CONFIG.apiGatewayUrl}/${endpoint}`;
+                    console.log(`📡 RAGチャット ${endpoint} エンドポイント使用:`, requestBody);
+                    console.log(`📡 完全なURL:`, fullUrl);
+
+                    const response = await fetch(fullUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    console.log(`📡 レスポンスステータス: ${response.status}`);
+                    const responseText = await response.text();
+                    console.log(`📡 レスポンス内容:`, responseText);
+
+                    if (!response.ok) {
+                        throw new Error(`API エラー: ${response.status} - ${responseText}`);
+                    }
+
+                    const data = JSON.parse(responseText);
+                    const fullAnswer = data.answer || '回答を取得できませんでした';
+
+                    // AIメッセージを空で追加（タイプライター効果用）
+                    const msgIndex = this.messages.length;
+                    this.messages.push({
+                        type: 'assistant',
+                        content: '',
+                        model: data.model || '無機RAG powered by Claude Sonnet 4',
+                        sources: data.sources || [],
+                        source_links: data.source_links || [],
+                        is_rag_response: data.is_rag_response || false,
+                        document_url: data.document_url || null,
+                        timestamp: new Date(),
+                        _typing: true
+                    });
+
+                    this.isLoading = false;
+                    this.updateChatArea();
+
+                    // タイプライター効果で表示
+                    await this.typewriterEffect(msgIndex, fullAnswer);
+
+                    // 文書生成が完了した場合の通知
+                    if (data.document_url) {
+                        console.log(`📄 文書が生成されました: ${data.document_url}`);
+                    }
+
+                    // チャット履歴を自動更新（応答受信時）
+                    this.autoSaveCurrentChat();
+
+                } catch (error) {
+                    console.error('Message error:', error);
+
+                    this.messages.push({
+                        type: 'error',
+                        content: `エラー: ${error.message}`,
+                        timestamp: new Date()
+                    });
+                }
+
+                this.isLoading = false;
+                this.updateChatArea();
+
+                // スクロールはupdateChatArea()内で自動実行される
+            }
+        }
+
+        // アプリケーション初期化
+        console.log('DOM fully loaded, starting App initialization');
+        const app = new App();
+        console.log('✅ 無機RAG システム（高機能版）初期化完了');
+    </script>
+</body>
+</html>

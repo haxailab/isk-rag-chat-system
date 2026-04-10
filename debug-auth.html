@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JWT認証デバッグツール</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-2xl font-bold mb-6">🔧 JWT認証デバッグツール</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- ログイン -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-4">1. Cognito認証</h2>
+                <div id="loginSection">
+                    <input type="text" id="username" placeholder="ユーザー名" class="w-full p-2 border rounded mb-2">
+                    <input type="password" id="password" placeholder="パスワード" class="w-full p-2 border rounded mb-4">
+                    <button onclick="login()" class="w-full bg-blue-500 text-white p-2 rounded">ログイン</button>
+                </div>
+                <div id="loginResult" class="mt-4 text-sm bg-gray-50 p-3 rounded hidden"></div>
+            </div>
+
+            <!-- トークン表示 -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-4">2. JWTトークン</h2>
+                <textarea id="tokenDisplay" rows="6" class="w-full p-2 border rounded text-xs" readonly placeholder="ログイン後にトークンが表示されます"></textarea>
+                <button onclick="testToken()" class="w-full bg-green-500 text-white p-2 rounded mt-2" disabled id="testTokenBtn">トークンテスト</button>
+            </div>
+
+            <!-- API呼び出し -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-4">3. API呼び出し</h2>
+                <input type="text" id="testMessage" placeholder="テストメッセージ" class="w-full p-2 border rounded mb-2" value="こんにちは">
+                <button onclick="testAPI()" class="w-full bg-purple-500 text-white p-2 rounded mb-2" disabled id="testAPIBtn">認証付きAPI呼び出し</button>
+                <button onclick="testCORS()" class="w-full bg-orange-500 text-white p-2 rounded">CORS プリフライト テスト</button>
+                <div id="apiResult" class="mt-4 text-sm bg-gray-50 p-3 rounded max-h-32 overflow-y-auto"></div>
+            </div>
+
+            <!-- ログ -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-4">4. デバッグログ</h2>
+                <div id="debugLog" class="text-xs bg-black text-green-400 p-3 rounded font-mono h-64 overflow-y-auto"></div>
+                <button onclick="clearLog()" class="w-full bg-red-500 text-white p-2 rounded mt-2">ログクリア</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AWS SDK -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1542.0.min.js"></script>
+    <script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+
+    <script>
+        const CONFIG = {
+            region: 'ap-northeast-1',
+            userPoolId: 'ap-northeast-1_i2AeoNWra',
+            userPoolClientId: '66d8jukea24p01u1bfrjmq01r0',
+            apiGatewayUrl: 'https://ca65otj198.execute-api.ap-northeast-1.amazonaws.com/prod/'
+        };
+
+        AWS.config.region = CONFIG.region;
+        const poolData = {
+            UserPoolId: CONFIG.userPoolId,
+            ClientId: CONFIG.userPoolClientId
+        };
+        const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+
+        let currentToken = null;
+
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logDiv = document.getElementById('debugLog');
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+
+        function clearLog() {
+            document.getElementById('debugLog').innerHTML = '';
+        }
+
+        async function login() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!username || !password) {
+                log('❌ ユーザー名とパスワードを入力してください');
+                return;
+            }
+
+            log(`🔐 ログイン試行: ${username}`);
+
+            try {
+                const authenticationData = {
+                    Username: username,
+                    Password: password,
+                };
+
+                const authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails(authenticationData);
+                const userData = {
+                    Username: username,
+                    Pool: userPool,
+                };
+                const cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+
+                const result = await new Promise((resolve, reject) => {
+                    cognitoUser.authenticateUser(authenticationDetails, {
+                        onSuccess: resolve,
+                        onFailure: reject,
+                        newPasswordRequired: (userAttributes, requiredAttributes) => {
+                            reject(new Error('新しいパスワードの設定が必要です'));
+                        }
+                    });
+                });
+
+                currentToken = result.getAccessToken().getJwtToken();
+                const idToken = result.getIdToken().getJwtToken();
+
+                log('✅ ログイン成功');
+                log(`🎫 Access Token: ${currentToken.substring(0, 50)}...`);
+                log(`🆔 ID Token: ${idToken.substring(0, 50)}...`);
+
+                // トークン表示
+                document.getElementById('tokenDisplay').value = `Access Token:\n${currentToken}\n\nID Token:\n${idToken}`;
+
+                // ボタン有効化
+                document.getElementById('testTokenBtn').disabled = false;
+                document.getElementById('testAPIBtn').disabled = false;
+
+                // ログイン結果表示
+                const payload = result.getIdToken().payload;
+                document.getElementById('loginResult').innerHTML = `
+                    <strong>ログイン成功</strong><br>
+                    ユーザー: ${payload['cognito:username']}<br>
+                    Email: ${payload.email}<br>
+                    Sub: ${payload.sub}
+                `;
+                document.getElementById('loginResult').classList.remove('hidden');
+
+            } catch (error) {
+                log(`❌ ログイン失敗: ${error.message}`);
+                document.getElementById('loginResult').innerHTML = `<strong>ログイン失敗:</strong><br>${error.message}`;
+                document.getElementById('loginResult').classList.remove('hidden');
+            }
+        }
+
+        async function testToken() {
+            if (!currentToken) {
+                log('❌ トークンがありません。先にログインしてください');
+                return;
+            }
+
+            log('🔍 JWT トークン解析中...');
+
+            try {
+                // JWT デコード（簡易版）
+                const parts = currentToken.split('.');
+                const header = JSON.parse(atob(parts[0]));
+                const payload = JSON.parse(atob(parts[1]));
+
+                log(`📋 JWT Header: ${JSON.stringify(header, null, 2)}`);
+                log(`📋 JWT Payload: ${JSON.stringify(payload, null, 2)}`);
+                log(`⏰ 有効期限: ${new Date(payload.exp * 1000).toLocaleString()}`);
+
+            } catch (error) {
+                log(`❌ トークン解析エラー: ${error.message}`);
+            }
+        }
+
+        async function testCORS() {
+            log('🌐 CORS プリフライト テスト開始...');
+
+            try {
+                const response = await fetch(`${CONFIG.apiGatewayUrl}chat`, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Access-Control-Request-Method': 'POST',
+                        'Access-Control-Request-Headers': 'Authorization,Content-Type'
+                    }
+                });
+
+                log(`✅ CORS プリフライト: ${response.status} ${response.statusText}`);
+
+                // レスポンスヘッダーを表示
+                const headers = {};
+                for (const [key, value] of response.headers.entries()) {
+                    headers[key] = value;
+                }
+                log(`📋 Response Headers: ${JSON.stringify(headers, null, 2)}`);
+
+            } catch (error) {
+                log(`❌ CORS テスト失敗: ${error.message}`);
+            }
+        }
+
+        async function testAPI() {
+            if (!currentToken) {
+                log('❌ トークンがありません。先にログインしてください');
+                return;
+            }
+
+            const message = document.getElementById('testMessage').value.trim() || 'こんにちは';
+            log(`📤 API呼び出し開始: "${message}"`);
+
+            try {
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentToken}`
+                };
+
+                log(`📋 Request Headers: ${JSON.stringify(headers, null, 2)}`);
+
+                const response = await fetch(`${CONFIG.apiGatewayUrl}chat`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        message: message
+                    })
+                });
+
+                log(`📥 Response: ${response.status} ${response.statusText}`);
+
+                // レスポンスヘッダーを表示
+                const responseHeaders = {};
+                for (const [key, value] of response.headers.entries()) {
+                    responseHeaders[key] = value;
+                }
+                log(`📋 Response Headers: ${JSON.stringify(responseHeaders, null, 2)}`);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    log(`✅ API呼び出し成功`);
+                    log(`🤖 Claude Response: ${data.answer}`);
+
+                    document.getElementById('apiResult').innerHTML = `
+                        <strong>✅ 成功</strong><br>
+                        <strong>Claude:</strong> ${data.answer}<br>
+                        <strong>Model:</strong> ${data.model}
+                    `;
+                } else {
+                    const errorText = await response.text();
+                    log(`❌ API エラー: ${errorText}`);
+                    document.getElementById('apiResult').innerHTML = `
+                        <strong>❌ エラー (${response.status})</strong><br>
+                        ${errorText}
+                    `;
+                }
+
+            } catch (error) {
+                log(`❌ API呼び出し失敗: ${error.message}`);
+                log(`📋 Error Details: ${JSON.stringify(error, null, 2)}`);
+                document.getElementById('apiResult').innerHTML = `
+                    <strong>❌ ネットワークエラー</strong><br>
+                    ${error.message}
+                `;
+            }
+        }
+
+        // 初期ログ
+        log('🚀 JWT認証デバッグツール初期化完了');
+        log(`🔧 API Gateway URL: ${CONFIG.apiGatewayUrl}`);
+        log(`🔧 User Pool ID: ${CONFIG.userPoolId}`);
+    </script>
+</body>
+</html>

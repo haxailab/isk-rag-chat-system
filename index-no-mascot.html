@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>無機RAG - ISK AI Assistant</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --isk-red: #DC143C;
+            --isk-red-dark: #B91C3C;
+            --isk-red-light: #FEE2E2;
+        }
+
+        .chat-container {
+            height: calc(100vh - 200px);
+        }
+        .message-bubble {
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .isk-gradient {
+            background: linear-gradient(135deg, var(--isk-red) 0%, var(--isk-red-dark) 100%);
+        }
+
+        .logo-main {
+            height: 64px;
+            max-width: 240px;
+        }
+
+        .logo-header {
+            height: 36px;
+        }
+
+        .typing-indicator {
+            display: inline-block;
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background-color: var(--isk-red);
+            margin: 0 1px;
+            animation: typing 1.4s infinite ease-in-out both;
+        }
+        .typing-indicator:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes typing {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        .ai-icon {
+            width: 48px;
+            height: 48px;
+            background: var(--isk-red);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 20px;
+        }
+    </style>
+</head>
+<body class="bg-white">
+    <div id="root">
+        <div class="min-h-screen flex items-center justify-center bg-gray-50">
+            <div class="text-center">
+                <div class="inline-block w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                <p class="text-gray-800">無機RAG システム読み込み中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- AWS SDK -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1542.0.min.js"></script>
+    <script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+
+    <script>
+        // AWS Cognito設定
+        const CONFIG = {
+            region: 'ap-northeast-1',
+            userPoolId: 'ap-northeast-1_i2AeoNWra',
+            userPoolClientId: '66d8jukea24p01u1bfrjmq01r0',
+            apiGatewayUrl: 'https://ca65otj198.execute-api.ap-northeast-1.amazonaws.com/prod/',
+            assetsUrl: 'https://d3hwl9tcru7yod.cloudfront.net/assets/'
+        };
+
+        // AWS設定
+        AWS.config.region = CONFIG.region;
+
+        // Cognito User Pool設定
+        const poolData = {
+            UserPoolId: CONFIG.userPoolId,
+            ClientId: CONFIG.userPoolClientId
+        };
+        const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+
+        // JWT認証管理クラス
+        class AuthManager {
+            constructor() {
+                this.currentUser = null;
+                this.accessToken = null;
+                this.idToken = null;
+            }
+
+            // ログイン
+            signIn(username, password) {
+                return new Promise((resolve, reject) => {
+                    const authenticationData = {
+                        Username: username,
+                        Password: password,
+                    };
+
+                    const authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails(authenticationData);
+
+                    const userData = {
+                        Username: username,
+                        Pool: userPool,
+                    };
+
+                    const cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+
+                    cognitoUser.authenticateUser(authenticationDetails, {
+                        onSuccess: (result) => {
+                            console.log('Authentication successful:', result);
+
+                            this.accessToken = result.getAccessToken().getJwtToken();
+                            this.idToken = result.getIdToken().getJwtToken();
+                            this.currentUser = cognitoUser;
+
+                            // ユーザー情報を取得
+                            const payload = result.getIdToken().payload;
+                            const userInfo = {
+                                username: payload['cognito:username'] || username,
+                                email: payload.email,
+                                name: payload.given_name || username,
+                                sub: payload.sub
+                            };
+
+                            // ローカルストレージに保存
+                            localStorage.setItem('access_token', this.accessToken);
+                            localStorage.setItem('id_token', this.idToken);
+                            localStorage.setItem('user_info', JSON.stringify(userInfo));
+
+                            resolve(userInfo);
+                        },
+                        onFailure: (err) => {
+                            console.error('Authentication failed:', err);
+                            reject(err);
+                        },
+                        newPasswordRequired: (userAttributes, requiredAttributes) => {
+                            console.log('New password required');
+                            reject(new Error('新しいパスワードの設定が必要です'));
+                        }
+                    });
+                });
+            }
+
+            // ログアウト
+            signOut() {
+                if (this.currentUser) {
+                    this.currentUser.signOut();
+                }
+
+                this.currentUser = null;
+                this.accessToken = null;
+                this.idToken = null;
+
+                localStorage.removeItem('access_token');
+                localStorage.removeItem('id_token');
+                localStorage.removeItem('user_info');
+            }
+
+            // 現在のユーザーを取得
+            getCurrentUser() {
+                const savedToken = localStorage.getItem('id_token');
+                const savedUserInfo = localStorage.getItem('user_info');
+
+                if (savedToken && savedUserInfo) {
+                    this.accessToken = localStorage.getItem('access_token');
+                    this.idToken = savedToken;
+                    return JSON.parse(savedUserInfo);
+                }
+
+                return null;
+            }
+
+            // JWTトークンを取得 (API Gateway認証用にID Tokenを使用)
+            getAccessToken() {
+                return this.idToken || localStorage.getItem('id_token');
+            }
+
+            // 認証済みAPIリクエスト
+            async authenticatedRequest(url, options = {}) {
+                const token = this.getAccessToken();
+                if (!token) {
+                    throw new Error('認証トークンがありません');
+                }
+
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                    ...options.headers
+                };
+
+                return fetch(url, {
+                    ...options,
+                    headers
+                });
+            }
+        }
+
+        // グローバル認証管理インスタンス
+        const authManager = new AuthManager();
+
+        // メインアプリケーション
+        class App {
+            constructor() {
+                this.user = null;
+                this.loading = true;
+                this.messages = [];
+                this.isLoading = false;
+
+                this.init();
+            }
+
+            async init() {
+                await this.checkAuthState();
+                this.render();
+            }
+
+            async checkAuthState() {
+                try {
+                    this.user = authManager.getCurrentUser();
+                } catch (error) {
+                    console.error('Auth check error:', error);
+                    this.user = null;
+                }
+                this.loading = false;
+            }
+
+            render() {
+                const root = document.getElementById('root');
+
+                if (this.loading) {
+                    root.innerHTML = this.renderLoading();
+                } else if (this.user) {
+                    root.innerHTML = this.renderChat();
+                    this.attachChatEventListeners();
+                } else {
+                    root.innerHTML = this.renderLogin();
+                    this.attachLoginEventListeners();
+                }
+            }
+
+            renderLoading() {
+                return `
+                    <div class="min-h-screen flex items-center justify-center bg-gray-50">
+                        <div class="text-center">
+                            <div class="inline-block w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                            <p class="text-gray-800">無機RAG システムを読み込み中...</p>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderLogin() {
+                return `
+                    <div class="min-h-screen bg-white flex items-center justify-center">
+                        <div class="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg border border-gray-200">
+                            <!-- Header with Title -->
+                            <div class="text-center space-y-4">
+                                <h2 class="text-4xl font-bold text-black">無機RAG</h2>
+                                <p class="text-gray-600">ISK社内向け高性能AIチャットシステム</p>
+                            </div>
+
+                            <!-- AI Icon -->
+                            <div class="flex justify-center py-6">
+                                <div class="ai-icon">AI</div>
+                            </div>
+
+                            <form id="loginForm" class="space-y-6">
+                                <div>
+                                    <label class="block text-sm font-medium text-black mb-2">
+                                        ユーザー名
+                                    </label>
+                                    <input
+                                        type="text"
+                                        id="username"
+                                        class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                        placeholder="Cognitoユーザー名"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-black mb-2">
+                                        パスワード
+                                    </label>
+                                    <input
+                                        type="password"
+                                        id="password"
+                                        class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                        placeholder="パスワード"
+                                        required
+                                    />
+                                </div>
+                                <div id="loginError" class="hidden bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg"></div>
+                                <button
+                                    type="submit"
+                                    id="loginButton"
+                                    class="w-full py-3 px-4 text-white rounded-lg hover:opacity-90 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all isk-gradient"
+                                >
+                                    ログイン
+                                </button>
+                            </form>
+
+                            <div class="text-center">
+                                <div class="bg-red-50 p-4 rounded-lg text-sm border border-red-100">
+                                    <p class="font-medium text-red-700">🔐 セキュア認証</p>
+                                    <p class="text-gray-600 text-xs mt-1">JWT認証による安全な接続</p>
+                                </div>
+                            </div>
+
+                            <!-- ISK Logo (bigger and positioned lower, no tagline) -->
+                            <div class="flex justify-center pt-6 border-t border-gray-100">
+                                <img src="${CONFIG.assetsUrl}isk-logo.png" alt="ISK" class="logo-main mx-auto opacity-80">
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderChat() {
+                const messagesHtml = this.messages.map((message, index) => {
+                    const justifyClass = message.type === 'user' ? 'justify-end' : 'justify-start';
+                    let bubbleClass = '';
+
+                    if (message.type === 'user') {
+                        bubbleClass = 'text-white isk-gradient';
+                    } else if (message.type === 'error') {
+                        bubbleClass = 'bg-red-50 text-red-800 border border-red-200';
+                    } else {
+                        bubbleClass = 'bg-gray-100 border border-gray-200 text-black';
+                    }
+
+                    return `
+                        <div class="flex ${justifyClass}">
+                            <div class="message-bubble p-4 rounded-xl ${bubbleClass}">
+                                <div class="whitespace-pre-line">${this.escapeHtml(message.content)}</div>
+                                ${message.model ? `<div class="text-xs opacity-70 mt-2">モデル: ${message.model}</div>` : ''}
+                                <div class="text-xs opacity-50 mt-1">${message.timestamp.toLocaleTimeString()}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                const loadingHtml = this.isLoading ? `
+                    <div class="flex justify-start">
+                        <div class="bg-gray-100 p-4 rounded-xl message-bubble border border-gray-200">
+                            <div class="flex items-center space-x-3">
+                                <div class="flex space-x-1">
+                                    <div class="typing-indicator"></div>
+                                    <div class="typing-indicator"></div>
+                                    <div class="typing-indicator"></div>
+                                </div>
+                                <span class="text-sm text-gray-600">無機RAGが回答を生成中...</span>
+                            </div>
+                        </div>
+                    </div>
+                ` : '';
+
+                const welcomeHtml = this.messages.length === 0 ? `
+                    <div class="text-center text-gray-600 mt-12">
+                        <div class="mb-6">
+                            <div class="ai-icon mx-auto mb-4">AI</div>
+                        </div>
+                        <div class="text-2xl mb-2 text-black">🤖 無機RAG アシスタント</div>
+                        <div class="text-sm mb-6 text-gray-600">Claude Sonnet 4.0 powered by AWS Bedrock</div>
+                        <div class="bg-red-50 p-6 rounded-xl max-w-md mx-auto border border-red-100">
+                            <p class="font-medium mb-2 text-red-700">🔐 認証済み</p>
+                            <p class="text-gray-600 text-sm">
+                                JWT認証によりClaude Sonnet 4との安全な対話が可能です
+                            </p>
+                        </div>
+                    </div>
+                ` : '';
+
+                return `
+                    <div class="h-screen flex flex-col bg-white">
+                        <!-- Header -->
+                        <header class="text-white p-4 shadow-lg isk-gradient">
+                            <div class="flex justify-between items-center">
+                                <div class="flex items-center space-x-4">
+                                    <div class="text-xl font-bold">無機RAG</div>
+                                    <div class="text-xs opacity-90">AI Assistant</div>
+                                    <div class="px-3 py-1 bg-white bg-opacity-20 rounded-full text-xs">
+                                        Claude Sonnet 4.0
+                                    </div>
+                                </div>
+                                <div class="flex items-center space-x-6">
+                                    <div class="text-right">
+                                        <span class="text-sm">👋 ${this.user.name || this.user.username}</span>
+                                        <div class="text-xs opacity-90">ISK Member</div>
+                                    </div>
+                                    <button
+                                        id="logoutButton"
+                                        class="bg-white bg-opacity-20 hover:bg-opacity-30 px-4 py-2 rounded-lg text-sm transition-all"
+                                    >
+                                        ログアウト
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- ISK Logo positioned separately below header content -->
+                            <div class="mt-3 flex justify-center">
+                                <img src="${CONFIG.assetsUrl}isk-logo.png" alt="ISK" class="logo-header opacity-90">
+                            </div>
+                        </header>
+
+                        <!-- Chat Area -->
+                        <div class="flex-1 chat-container overflow-y-auto p-6 space-y-4 bg-white" id="chatArea">
+                            ${welcomeHtml}
+                            ${messagesHtml}
+                            ${loadingHtml}
+                        </div>
+
+                        <!-- Input Area -->
+                        <footer class="border-t border-gray-200 bg-white p-6 shadow-lg">
+                            <form id="chatForm" class="flex space-x-3">
+                                <input
+                                    type="text"
+                                    id="messageInput"
+                                    placeholder="無機RAGに質問やお手伝いを依頼してください..."
+                                    class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                    ${this.isLoading ? 'disabled' : ''}
+                                />
+                                <button
+                                    type="submit"
+                                    id="sendButton"
+                                    class="px-6 py-3 text-white rounded-lg hover:opacity-90 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all isk-gradient"
+                                    ${this.isLoading ? 'disabled' : ''}
+                                >
+                                    送信
+                                </button>
+                            </form>
+                            <div class="text-xs text-center mt-3">
+                                <span class="text-gray-500">無機RAG powered by Claude Sonnet 4.0</span>
+                            </div>
+                        </footer>
+                    </div>
+                `;
+            }
+
+            attachLoginEventListeners() {
+                const form = document.getElementById('loginForm');
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await this.handleLogin();
+                });
+            }
+
+            attachChatEventListeners() {
+                const form = document.getElementById('chatForm');
+                const logoutButton = document.getElementById('logoutButton');
+
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await this.handleSendMessage();
+                });
+
+                logoutButton.addEventListener('click', () => {
+                    this.handleLogout();
+                });
+            }
+
+            async handleLogin() {
+                const username = document.getElementById('username').value.trim();
+                const password = document.getElementById('password').value.trim();
+                const loginButton = document.getElementById('loginButton');
+                const errorDiv = document.getElementById('loginError');
+
+                if (!username || !password) return;
+
+                loginButton.disabled = true;
+                loginButton.innerHTML = '<div class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>認証中...';
+                errorDiv.classList.add('hidden');
+
+                try {
+                    this.user = await authManager.signIn(username, password);
+                    console.log('Login successful:', this.user);
+                    this.render();
+                } catch (error) {
+                    console.error('Login error:', error);
+                    let errorMessage = 'ログインに失敗しました。';
+
+                    if (error.code === 'UserNotConfirmedException') {
+                        errorMessage = 'アカウントが確認されていません。';
+                    } else if (error.code === 'NotAuthorizedException') {
+                        errorMessage = 'ユーザー名またはパスワードが正しくありません。';
+                    } else if (error.code === 'UserNotFoundException') {
+                        errorMessage = 'ユーザーが存在しません。';
+                    } else if (error.message) {
+                        errorMessage = error.message;
+                    }
+
+                    errorDiv.textContent = errorMessage;
+                    errorDiv.classList.remove('hidden');
+                } finally {
+                    loginButton.disabled = false;
+                    loginButton.textContent = 'ログイン';
+                }
+            }
+
+            handleLogout() {
+                authManager.signOut();
+                this.user = null;
+                this.messages = [];
+                this.render();
+            }
+
+            async handleSendMessage() {
+                const input = document.getElementById('messageInput');
+                const message = input.value.trim();
+
+                if (!message || this.isLoading) return;
+
+                // ユーザーメッセージを追加
+                this.addMessage('user', message);
+                input.value = '';
+                this.isLoading = true;
+                this.render();
+
+                try {
+                    console.log('Sending authenticated message:', message);
+
+                    // JWT認証付きでChatAPIを呼び出し
+                    const response = await authManager.authenticatedRequest(
+                        `${CONFIG.apiGatewayUrl}chat`,
+                        {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                message: message
+                            })
+                        }
+                    );
+
+                    console.log('Chat API Response:', response.status, response.statusText);
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        console.log('Chat API Data:', data);
+
+                        const aiResponse = data.answer || '無機RAGから応答がありませんでした。';
+                        this.addMessage('assistant', aiResponse, data.model || 'Claude Sonnet 4.0');
+                    } else if (response.status === 401) {
+                        // 認証エラーの場合はログアウト
+                        this.addMessage('error', '認証エラーが発生しました。再度ログインしてください。');
+                        setTimeout(() => this.handleLogout(), 2000);
+                    } else {
+                        const errorText = await response.text();
+                        console.error('API Error:', response.status, errorText);
+                        this.addMessage('error', `API呼び出しエラー (HTTP ${response.status}): ${errorText}`);
+                    }
+                } catch (error) {
+                    console.error('Chat error:', error);
+                    let errorMessage = `ネットワークエラー: ${error.message}`;
+
+                    if (error.message.includes('認証トークン')) {
+                        errorMessage = '認証トークンが無効です。再度ログインしてください。';
+                        setTimeout(() => this.handleLogout(), 2000);
+                    }
+
+                    this.addMessage('error', errorMessage);
+                }
+
+                this.isLoading = false;
+                this.render();
+                this.scrollToBottom();
+            }
+
+            addMessage(type, content, model = null) {
+                const message = {
+                    type,
+                    content,
+                    model,
+                    timestamp: new Date()
+                };
+                this.messages.push(message);
+            }
+
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            scrollToBottom() {
+                const chatArea = document.getElementById('chatArea');
+                if (chatArea) {
+                    chatArea.scrollTop = chatArea.scrollHeight;
+                }
+            }
+        }
+
+        // アプリケーション初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            new App();
+        });
+    </script>
+</body>
+</html>

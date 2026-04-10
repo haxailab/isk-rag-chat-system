@@ -1,0 +1,34 @@
+{
+  "name": "isk-rag-chat-system",
+  "version": "1.0.0",
+  "description": "ISK社内向けRAGチャットシステム",
+  "bin": {
+    "isk-rag-chat-system": "bin/isk-rag-chat-system.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk",
+    "deploy": "cdk deploy --all --require-approval never",
+    "deploy:simple": "cdk deploy --all --require-approval never --app 'npx ts-node --prefer-ts-exts bin/isk-rag-chat-system-simple.ts'",
+    "destroy": "cdk destroy --all --force",
+    "destroy:simple": "cdk destroy --all --force --app 'npx ts-node --prefer-ts-exts bin/isk-rag-chat-system-simple.ts'",
+    "diff": "cdk diff",
+    "diff:simple": "cdk diff --app 'npx ts-node --prefer-ts-exts bin/isk-rag-chat-system-simple.ts'",
+    "synth": "cdk synth",
+    "synth:simple": "cdk synth --app 'npx ts-node --prefer-ts-exts bin/isk-rag-chat-system-simple.ts'"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.4.0",
+    "@types/node": "18.14.6",
+    "aws-cdk": "2.169.0",
+    "jest": "^29.4.0",
+    "ts-jest": "^29.0.5",
+    "typescript": "~4.9.4"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.169.0",
+    "constructs": "^10.0.0"
+  }
+}

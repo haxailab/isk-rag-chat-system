@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISK RAG チャットシステム - 拡張版</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .message-bubble {
+            max-width: 70%;
+            word-wrap: break-word;
+        }
+        .file-upload-area {
+            border: 2px dashed #d1d5db;
+            transition: all 0.3s ease;
+        }
+        .file-upload-area.dragover {
+            border-color: #3b82f6;
+            background-color: #dbeafe;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root">
+        <!-- フォールバック表示 -->
+        <div class="min-h-screen flex items-center justify-center">
+            <div class="text-center">
+                <div class="text-xl text-blue-600 mb-4">拡張版読み込み中...</div>
+                <div class="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent mx-auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/babel">
+        console.log('🚀 React Step2 (拡張版) 開始');
+
+        const { useState, useEffect, useRef } = React;
+
+        // メインアプリケーション
+        function App() {
+            console.log('📱 App component rendering');
+
+            return (
+                <div className="h-screen flex">
+                    {/* サイドバー */}
+                    <Sidebar />
+
+                    {/* メインチャットエリア */}
+                    <div className="flex-1 flex flex-col">
+                        <Header />
+                        <ChatArea />
+                    </div>
+                </div>
+            );
+        }
+
+        // サイドバーコンポーネント
+        function Sidebar() {
+            const [sessionFiles, setSessionFiles] = useState([
+                { id: 1, name: 'sample.pdf', status: 'processed', size: '2.3MB' },
+                { id: 2, name: 'data.csv', status: 'processing', size: '1.1MB' }
+            ]);
+
+            return (
+                <div className="w-80 bg-gray-800 text-white flex flex-col">
+                    {/* ヘッダー */}
+                    <div className="p-4 border-b border-gray-700">
+                        <h2 className="text-lg font-semibold">📁 セッション管理</h2>
+                        <div className="mt-2 text-sm text-gray-300">
+                            拡張機能テスト版
+                        </div>
+                    </div>
+
+                    {/* ファイル一覧 */}
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                        <h3 className="text-sm font-medium mb-3">
+                            📄 アップロード済みファイル ({sessionFiles.length})
+                        </h3>
+
+                        {sessionFiles.length > 0 ? (
+                            <div className="space-y-2">
+                                {sessionFiles.map(file => (
+                                    <div key={file.id} className="bg-gray-700 p-3 rounded-lg">
+                                        <div className="font-medium truncate text-sm">
+                                            {file.name}
+                                        </div>
+                                        <div className="text-xs text-gray-400 mt-1 flex justify-between">
+                                            <span>{file.size}</span>
+                                            <span className={`px-2 py-1 rounded text-xs ${
+                                                file.status === 'processed'
+                                                    ? 'bg-green-600 text-green-100'
+                                                    : 'bg-yellow-600 text-yellow-100'
+                                            }`}>
+                                                {file.status === 'processed' ? '処理済み' : '処理中'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-sm text-gray-400 text-center py-8">
+                                ファイルがありません
+                            </div>
+                        )}
+                    </div>
+
+                    {/* 設定 */}
+                    <div className="p-4 border-t border-gray-700">
+                        <label className="flex items-center text-sm">
+                            <input
+                                type="checkbox"
+                                defaultChecked={true}
+                                className="mr-2"
+                            />
+                            拡張検索（ファイル+KB）
+                        </label>
+
+                        <button className="mt-3 w-full px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">
+                            新しいセッション
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // ヘッダーコンポーネント
+        function Header() {
+            return (
+                <header className="bg-blue-600 text-white p-4 shadow-md">
+                    <div className="flex justify-between items-center">
+                        <div className="flex items-center space-x-4">
+                            <h1 className="text-xl font-bold">🧪 ISK RAG チャットシステム（拡張版）</h1>
+                            <span className="text-sm bg-green-500 px-2 py-1 rounded">拡張モード</span>
+                        </div>
+                        <div className="flex items-center space-x-4">
+                            <span className="text-sm">認証: スキップ中</span>
+                            <button className="bg-blue-500 hover:bg-blue-700 px-4 py-2 rounded text-sm">
+                                設定
+                            </button>
+                        </div>
+                    </div>
+                </header>
+            );
+        }
+
+        // チャットエリアコンポーネント
+        function ChatArea() {
+            const [messages, setMessages] = useState([
+                {
+                    type: 'system',
+                    content: '🎉 拡張版ISK RAGチャットシステムへようこそ！\n\n• ファイルをドラッグ&ドロップしてアップロード\n• 拡張検索でナレッジベース+セッションファイルを同時検索\n• ChatGPTライクなUIで快適な操作',
+                    timestamp: new Date()
+                }
+            ]);
+            const [inputMessage, setInputMessage] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [dragOver, setDragOver] = useState(false);
+
+            const messagesEndRef = useRef(null);
+
+            useEffect(() => {
+                scrollToBottom();
+            }, [messages]);
+
+            const scrollToBottom = () => {
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            };
+
+            // メッセージ送信
+            const sendMessage = async (e) => {
+                e.preventDefault();
+                if (!inputMessage.trim() || loading) return;
+
+                const userMessage = {
+                    type: 'user',
+                    content: inputMessage,
+                    timestamp: new Date()
+                };
+
+                setMessages(prev => [...prev, userMessage]);
+                setInputMessage('');
+                setLoading(true);
+
+                try {
+                    // 拡張チャットエンドポイントを使用（認証なしでテスト）
+                    const response = await fetch('https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod/test-chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ message: inputMessage })
+                    });
+
+                    const data = await response.json();
+
+                    const aiMessage = {
+                        type: 'assistant',
+                        content: data.answer,
+                        model: data.model || 'Unknown Model',
+                        sources: data.sources || [],
+                        timestamp: new Date()
+                    };
+
+                    setMessages(prev => [...prev, aiMessage]);
+                } catch (error) {
+                    const errorMessage = {
+                        type: 'error',
+                        content: `エラー: ${error.message}`,
+                        timestamp: new Date()
+                    };
+                    setMessages(prev => [...prev, errorMessage]);
+                }
+
+                setLoading(false);
+            };
+
+            // ファイルアップロード処理
+            const handleFileUpload = async (files) => {
+                if (!files || files.length === 0) return;
+
+                console.log('ファイルアップロード:', files);
+
+                // デモ用の処理（実際のアップロードは後で実装）
+                const systemMessage = {
+                    type: 'system',
+                    content: `📎 ${files.length}個のファイルがアップロードされました（デモ版）:\n${Array.from(files).map(f => `• ${f.name} (${(f.size/1024/1024).toFixed(2)}MB)`).join('\n')}`,
+                    timestamp: new Date()
+                };
+
+                setMessages(prev => [...prev, systemMessage]);
+            };
+
+            // ドラッグ&ドロップ処理
+            const handleDragOver = (e) => {
+                e.preventDefault();
+                setDragOver(true);
+            };
+
+            const handleDragLeave = (e) => {
+                e.preventDefault();
+                setDragOver(false);
+            };
+
+            const handleDrop = (e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const files = e.dataTransfer.files;
+                handleFileUpload(files);
+            };
+
+            return (
+                <div className="flex-1 flex flex-col">
+                    {/* メッセージエリア */}
+                    <div
+                        className={`flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 ${
+                            dragOver ? 'bg-blue-50 border-2 border-dashed border-blue-300' : ''
+                        }`}
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                    >
+                        {dragOver && (
+                            <div className="fixed inset-0 bg-blue-50 bg-opacity-90 flex items-center justify-center z-50 pointer-events-none">
+                                <div className="text-center">
+                                    <div className="text-4xl mb-4">📁</div>
+                                    <div className="text-2xl font-bold text-blue-600">ファイルをここにドロップ</div>
+                                    <div className="text-gray-600 mt-2">PDF, 画像, Office文書, テキストファイルに対応</div>
+                                </div>
+                            </div>
+                        )}
+
+                        {messages.map((message, index) => (
+                            <div
+                                key={index}
+                                className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                            >
+                                <div className={`message-bubble p-4 rounded-lg ${
+                                    message.type === 'user'
+                                        ? 'bg-blue-500 text-white'
+                                        : message.type === 'error'
+                                        ? 'bg-red-100 text-red-800 border border-red-300'
+                                        : message.type === 'system'
+                                        ? 'bg-green-100 text-green-800 border border-green-300'
+                                        : 'bg-white border border-gray-200 shadow-sm'
+                                }`}>
+                                    <div className="whitespace-pre-wrap">{message.content}</div>
+
+                                    {message.model && message.type === 'assistant' && (
+                                        <div className="text-xs opacity-70 mt-2">
+                                            {message.model}
+                                        </div>
+                                    )}
+
+                                    <div className="text-xs opacity-50 mt-2">
+                                        {message.timestamp.toLocaleTimeString()}
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {loading && (
+                            <div className="flex justify-start">
+                                <div className="bg-gray-200 p-4 rounded-lg max-w-md">
+                                    <div className="flex items-center space-x-2">
+                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div>
+                                        <span>拡張RAGが回答中...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* 入力エリア */}
+                    <div className="border-t bg-white p-4">
+                        <div className="flex items-end space-x-3 max-w-6xl mx-auto">
+                            {/* ファイル選択ボタン */}
+                            <label className="cursor-pointer">
+                                <input
+                                    type="file"
+                                    multiple
+                                    accept=".pdf,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.docx,.xlsx,.pptx"
+                                    onChange={(e) => handleFileUpload(e.target.files)}
+                                    className="hidden"
+                                />
+                                <div className="flex items-center space-x-2 px-3 py-2 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 text-sm">
+                                    <span>📎</span>
+                                    <span>ファイル</span>
+                                </div>
+                            </label>
+
+                            {/* メッセージ入力フォーム */}
+                            <form onSubmit={sendMessage} className="flex-1 flex space-x-2">
+                                <input
+                                    type="text"
+                                    value={inputMessage}
+                                    onChange={(e) => setInputMessage(e.target.value)}
+                                    placeholder="拡張RAGに質問してください..."
+                                    className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    disabled={loading}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={loading || !inputMessage.trim()}
+                                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 font-medium"
+                                >
+                                    送信
+                                </button>
+                            </form>
+                        </div>
+
+                        {/* ヒント */}
+                        <div className="max-w-6xl mx-auto mt-2">
+                            <div className="text-xs text-gray-500 text-center">
+                                💡 ファイルをドラッグ&ドロップするか、📎ボタンでアップロード可能
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Reactアプリケーションをレンダリング
+        console.log('📱 ReactDOM.render開始（Step2）');
+        ReactDOM.render(<App />, document.getElementById('root'));
+        console.log('✅ React Step2 (拡張版) 初期化完了');
+    </script>
+</body>
+</html>
