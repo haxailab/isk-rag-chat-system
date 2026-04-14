@@ -6,6 +6,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { Duration } from 'aws-cdk-lib';
 
 interface IskRagChatSystemStackProps extends cdk.StackProps {
@@ -33,6 +34,16 @@ export class IskRagChatSystemStack extends cdk.Stack {
         expiration: Duration.days(1) // 24時間で削除
       }],
       removalPolicy: cdk.RemovalPolicy.DESTROY // 開発用
+    });
+
+    // DynamoDB アクセスログテーブル
+    const accessLogTable = new dynamodb.Table(this, 'AccessLogTable', {
+      tableName: 'isk-rag-access-log',
+      partitionKey: { name: 'username', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+      removalPolicy: cdk.RemovalPolicy.RETAIN
     });
 
     // Cognito User Pool
@@ -154,6 +165,19 @@ export class IskRagChatSystemStack extends cdk.Stack {
               resources: ['*']
             })
           ]
+        }),
+        DynamoDBAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'dynamodb:PutItem',
+                'dynamodb:Query',
+                'dynamodb:Scan'
+              ],
+              resources: [accessLogTable.tableArn]
+            })
+          ]
         })
       }
     });
@@ -169,7 +193,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       logRetention: logs.RetentionDays.ONE_WEEK,
       environment: {
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
-        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6'
+        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
+        ACCESS_LOG_TABLE: accessLogTable.tableName
       }
     });
 
@@ -185,7 +210,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       environment: {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
-        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6'
+        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
+        ACCESS_LOG_TABLE: accessLogTable.tableName
       }
     });
 
@@ -200,7 +226,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       logRetention: logs.RetentionDays.ONE_WEEK,
       environment: {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
-        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6'
+        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
+        ACCESS_LOG_TABLE: accessLogTable.tableName
       }
     });
 
@@ -316,7 +343,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       environment: {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
         CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
-        TEMP_FILES_BUCKET: tempFilesBucket.bucketName
+        TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
+        ACCESS_LOG_TABLE: accessLogTable.tableName
       }
     });
 
@@ -364,7 +392,9 @@ export class IskRagChatSystemStack extends cdk.Stack {
         allowCredentials: false
       }
     });
-    testEnhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction));
+    testEnhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction, {
+      timeout: Duration.seconds(29)
+    }));
 
     // 文書生成エンドポイント（認証なし）
     const documentGeneratorResource = api.root.addResource('generate-document', {
@@ -376,6 +406,106 @@ export class IskRagChatSystemStack extends cdk.Stack {
       }
     });
     documentGeneratorResource.addMethod('POST', new apigateway.LambdaIntegration(documentGeneratorFunction));
+
+    // アクセスログ取得用Lambda
+    const accessLogFunction = new lambda.Function(this, 'AccessLogFunction', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(`
+import json
+import boto3
+import os
+from datetime import datetime, timedelta
+
+dynamodb = boto3.resource('dynamodb')
+TABLE_NAME = os.environ.get('ACCESS_LOG_TABLE', 'isk-rag-access-log')
+
+def handler(event, context):
+    headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+        'Access-Control-Allow-Methods': 'GET,OPTIONS'
+    }
+    if event.get('httpMethod') == 'OPTIONS':
+        return {'statusCode': 200, 'headers': headers, 'body': '{}'}
+
+    try:
+        table = dynamodb.Table(TABLE_NAME)
+        params = event.get('queryStringParameters') or {}
+        username = params.get('username')
+        days = int(params.get('days', '30'))
+
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat() + 'Z'
+
+        if username:
+            resp = table.query(
+                KeyConditionExpression='username = :u AND #ts >= :since',
+                ExpressionAttributeNames={'#ts': 'timestamp'},
+                ExpressionAttributeValues={':u': username, ':since': since},
+                ScanIndexForward=False,
+                Limit=100
+            )
+        else:
+            resp = table.scan(
+                FilterExpression='#ts >= :since',
+                ExpressionAttributeNames={'#ts': 'timestamp'},
+                ExpressionAttributeValues={':since': since},
+                Limit=500
+            )
+
+        items = resp.get('Items', [])
+
+        # ユーザー別集計
+        summary = {}
+        for item in items:
+            u = item['username']
+            if u not in summary:
+                summary[u] = {'username': u, 'count': 0, 'last_access': '', 'endpoints': {}}
+            summary[u]['count'] += 1
+            if item['timestamp'] > summary[u]['last_access']:
+                summary[u]['last_access'] = item['timestamp']
+            ep = item.get('endpoint', 'unknown')
+            summary[u]['endpoints'][ep] = summary[u]['endpoints'].get(ep, 0) + 1
+
+        return {
+            'statusCode': 200,
+            'headers': headers,
+            'body': json.dumps({
+                'logs': items[:100],
+                'summary': sorted(summary.values(), key=lambda x: x['last_access'], reverse=True),
+                'total': len(items),
+                'period_days': days
+            }, ensure_ascii=False, default=str)
+        }
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'headers': headers,
+            'body': json.dumps({'error': str(e)})
+        }
+`),
+      role: lambdaRole,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        ACCESS_LOG_TABLE: accessLogTable.tableName
+      }
+    });
+
+    // アクセスログエンドポイント（認証付き）
+    const accessLogResource = api.root.addResource('access-log', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: ['*'],
+        allowMethods: ['GET', 'OPTIONS'],
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
+        allowCredentials: false
+      }
+    });
+    accessLogResource.addMethod('GET', new apigateway.LambdaIntegration(accessLogFunction), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO
+    });
 
     // ヘルスチェック用（認証不要・CORS対応）
     const healthResource = api.root.addResource('health', {
