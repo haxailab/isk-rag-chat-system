@@ -35,12 +35,17 @@ const backendStack = new IskRagChatSystemStack(app, 'IskRagChatSystemBackend', {
 const frontendStack = new IskRagChatSystemFrontendStack(app, 'IskRagChatSystemFrontend', {
   env, // 同じリージョン（ap-northeast-1）を使用
   crossRegionReferences: true, // クロスリージョン参照を有効化
-  // webAclArn: wafStack.webAclArn, // 一時的にWAFを無効化
-  userPoolId: 'ap-northeast-1_zG065zZXu', // 実際の値を直接指定
-  userPoolClientId: '320evpoao9264eh5ounfq8c313', // 実際の値を直接指定
-  apiGatewayUrl: 'https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod/' // 実際の値を直接指定
+  // webAclArn: wafStack.webAclArn, // TODO: SSMパラメータ競合解消後に有効化
+  userPoolId: backendStack.userPool.userPoolId,
+  userPoolClientId: backendStack.userPoolClient.userPoolClientId,
+  apiGatewayUrl: backendStack.apiGatewayUrl
 });
 
 // スタック間依存関係
 frontendStack.addDependency(backendStack);
 frontendStack.addDependency(wafStack);
+
+// 標準タグの追加
+cdk.Tags.of(app).add('Project', 'ISK-RAG-Chat');
+cdk.Tags.of(app).add('Environment', 'Development');
+cdk.Tags.of(app).add('Owner', 'ISK');

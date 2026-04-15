@@ -7,6 +7,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Duration } from 'aws-cdk-lib';
 
 interface IskRagChatSystemStackProps extends cdk.StackProps {
@@ -24,7 +25,10 @@ export class IskRagChatSystemStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: IskRagChatSystemStackProps) {
     super(scope, id, props);
 
-    // S3バケット（一時ファイル用）- 文書生成用に24時間TTL
+    // CORS許可オリジン（デプロイ時に設定可能）
+    const allowedOrigins = this.node.tryGetContext('allowedOrigins') as string[] || ['*'];
+
+    // S3バケット（一時ファイル用） 文書生成用に24時間TTL
     const tempFilesBucket = new s3.Bucket(this, 'TempFilesBucket', {
       bucketName: `isk-rag-temp-files-${this.account}-${this.region}`,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -102,8 +106,10 @@ export class IskRagChatSystemStack extends cdk.Stack {
                 'bedrock-runtime:InvokeModelWithResponseStream'
               ],
               resources: [
-                '*',
-                'arn:aws:bedrock:ap-northeast-1:*:inference-profile/global.anthropic.claude-sonnet-4-6'
+                `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-*`,
+                `arn:aws:bedrock:${this.region}:*:inference-profile/global.anthropic.claude-sonnet-4-6`,
+                `arn:aws:bedrock:*::foundation-model/anthropic.claude-*`,
+                `arn:aws:bedrock:*:*:inference-profile/global.anthropic.claude-*`
               ]
             }),
             new iam.PolicyStatement({
@@ -117,7 +123,9 @@ export class IskRagChatSystemStack extends cdk.Stack {
                 'bedrock-agent-runtime:Retrieve',
                 'bedrock-agent-runtime:RetrieveAndGenerate'
               ],
-              resources: ['*']  // BedrockAgentではワイルドカードが推奨
+              resources: [
+                `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*`
+              ]
             }),
             // Knowledge Base固有の権限を追加
             new iam.PolicyStatement({
@@ -127,7 +135,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
                 'bedrock:RetrieveAndGenerate'
               ],
               resources: [
-                'arn:aws:bedrock:ap-northeast-1:144828520862:knowledge-base/LK9Z59ROMF'
+                `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/LK9Z59ROMF`
               ]
             })
           ]
@@ -162,6 +170,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
                 'comprehend:DetectEntities',
                 'comprehend:DetectKeyPhrases'
               ],
+              // Textract/Comprehend do not support resource-level permissions
               resources: ['*']
             })
           ]
@@ -182,6 +191,23 @@ export class IskRagChatSystemStack extends cdk.Stack {
       }
     });
 
+    // Dead Letter Queues for Lambda functions
+    const fileUploadDLQ = new sqs.Queue(this, 'FileUploadFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+    const enhancedChatDLQ = new sqs.Queue(this, 'EnhancedChatFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+    const chatDLQ = new sqs.Queue(this, 'ChatFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+    const documentGeneratorDLQ = new sqs.Queue(this, 'DocumentGeneratorFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+    const accessLogDLQ = new sqs.Queue(this, 'AccessLogFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+
     // Lambda関数（ファイルアップロード処理）
     const fileUploadFunction = new lambda.Function(this, 'FileUploadFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -191,6 +217,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       timeout: Duration.minutes(5),
       memorySize: 2048,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: fileUploadDLQ,
+      reservedConcurrentExecutions: 5,
       environment: {
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
         CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
@@ -207,6 +235,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       timeout: Duration.minutes(5),
       memorySize: 2048,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: enhancedChatDLQ,
+      reservedConcurrentExecutions: 10,
       environment: {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
@@ -215,7 +245,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
       }
     });
 
-    // Lambda関数（チャット処理）- 既存
+    // Lambda関数（チャット処理） 既存
     const chatFunction = new lambda.Function(this, 'ChatFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
@@ -224,6 +254,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       timeout: Duration.minutes(3),
       memorySize: 1024,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: chatDLQ,
+      reservedConcurrentExecutions: 10,
       environment: {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
         CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
@@ -236,15 +268,24 @@ export class IskRagChatSystemStack extends cdk.Stack {
       restApiName: 'isk-rag-chat-api-minimal',
       description: 'ISK RAGチャットシステム最小構成API',
       defaultCorsPreflightOptions: {
-        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowOrigins: allowedOrigins,
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'Authorization']
       },
       deployOptions: {
         stageName: 'prod',
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
-        dataTraceEnabled: true
+        dataTraceEnabled: false,
+        throttlingRateLimit: 100,
+        throttlingBurstLimit: 200
       }
+    });
+
+    // リクエストバリデーション
+    const requestValidator = new apigateway.RequestValidator(this, 'RequestValidator', {
+      restApi: api,
+      validateRequestBody: true,
+      validateRequestParameters: true
     });
 
     // Cognito認証
@@ -256,7 +297,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
     // 認証付きチャットエンドポイント
     const chatResource = api.root.addResource('chat', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -270,7 +311,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
     // ファイルアップロードエンドポイント（認証付き）
     const fileUploadResource = api.root.addResource('file-upload', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -284,7 +325,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
     // 拡張チャットエンドポイント（認証付き）
     const enhancedChatResource = api.root.addResource('enhanced-chat', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -298,7 +339,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
     // セッション管理エンドポイント（認証付き）
     const sessionResource = api.root.addResource('session', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['GET', 'DELETE', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -326,88 +367,13 @@ export class IskRagChatSystemStack extends cdk.Stack {
       timeout: Duration.minutes(5),
       memorySize: 1024,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: documentGeneratorDLQ,
+      reservedConcurrentExecutions: 5,
       environment: {
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName
       }
     });
 
-    // シンプルテスト関数（診断用）
-    const simpleTestFunction = new lambda.Function(this, 'SimpleTestFunction', {
-      runtime: lambda.Runtime.PYTHON_3_12,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/simple-test'),
-      role: lambdaRole,
-      timeout: Duration.minutes(3),
-      memorySize: 512,
-      logRetention: logs.RetentionDays.ONE_WEEK,
-      environment: {
-        KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
-        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
-        TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
-        ACCESS_LOG_TABLE: accessLogTable.tableName
-      }
-    });
-
-    // シンプルテストエンドポイント（認証なし・診断用）
-    const testSimpleResource = api.root.addResource('test-simple', {
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
-        allowMethods: ['POST', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'X-Api-Key'],
-        allowCredentials: false
-      }
-    });
-    testSimpleResource.addMethod('POST', new apigateway.LambdaIntegration(simpleTestFunction));
-
-    // テスト用チャットエンドポイント（認証なし）
-    const testChatResource = api.root.addResource('test-chat', {
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
-        allowMethods: ['POST', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'X-Api-Key'],
-        allowCredentials: false
-      }
-    });
-    testChatResource.addMethod('POST', new apigateway.LambdaIntegration(chatFunction));
-
-    // テスト用ファイルアップロードエンドポイント（認証なし）
-    const testFileUploadResource = api.root.addResource('test-file-upload', {
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
-        allowMethods: ['POST', 'GET', 'DELETE', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'X-Api-Key'],
-        allowCredentials: false
-      }
-    });
-    testFileUploadResource.addMethod('POST', new apigateway.LambdaIntegration(fileUploadFunction));
-    testFileUploadResource.addMethod('GET', new apigateway.LambdaIntegration(fileUploadFunction));
-    testFileUploadResource.addMethod('DELETE', new apigateway.LambdaIntegration(fileUploadFunction));
-
-    // テスト用拡張チャットエンドポイント（認証なし）
-    const testEnhancedChatResource = api.root.addResource('test-enhanced-chat', {
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
-        allowMethods: ['POST', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'X-Api-Key'],
-        allowCredentials: false
-      }
-    });
-    testEnhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction, {
-      timeout: Duration.seconds(29)
-    }));
-
-    // 文書生成エンドポイント（認証なし）
-    const documentGeneratorResource = api.root.addResource('generate-document', {
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
-        allowMethods: ['POST', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'X-Api-Key'],
-        allowCredentials: false
-      }
-    });
-    documentGeneratorResource.addMethod('POST', new apigateway.LambdaIntegration(documentGeneratorFunction));
-
-    // アクセスログ取得用Lambda
     const accessLogFunction = new lambda.Function(this, 'AccessLogFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
@@ -488,6 +454,8 @@ def handler(event, context):
       role: lambdaRole,
       timeout: Duration.seconds(30),
       memorySize: 256,
+      deadLetterQueue: accessLogDLQ,
+      reservedConcurrentExecutions: 5,
       environment: {
         ACCESS_LOG_TABLE: accessLogTable.tableName
       }
@@ -496,7 +464,7 @@ def handler(event, context):
     // アクセスログエンドポイント（認証付き）
     const accessLogResource = api.root.addResource('access-log', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['GET', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -507,10 +475,10 @@ def handler(event, context):
       authorizationType: apigateway.AuthorizationType.COGNITO
     });
 
-    // ヘルスチェック用（認証不要・CORS対応）
+    // ヘルスチェック用（認証不要、CORS対応）
     const healthResource = api.root.addResource('health', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['GET', 'OPTIONS'],
         allowHeaders: ['Content-Type'],
         allowCredentials: false

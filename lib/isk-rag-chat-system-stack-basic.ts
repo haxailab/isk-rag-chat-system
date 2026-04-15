@@ -7,13 +7,14 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as opensearchserverless from 'aws-cdk-lib/aws-opensearchserverless';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Duration } from 'aws-cdk-lib';
 
 interface IskRagChatSystemStackProps extends cdk.StackProps {
   allowedIpRanges: string[];
 }
 
-export class IskRagChatSystemStack extends cdk.Stack {
+export class IskRagChatSystemStackBasic extends cdk.Stack {
   public readonly userPool: cognito.UserPool;
   public readonly userPoolClient: cognito.UserPoolClient;
   public readonly apiGatewayUrl: string;
@@ -23,6 +24,9 @@ export class IskRagChatSystemStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: IskRagChatSystemStackProps) {
     super(scope, id, props);
+
+    // CORS許可オリジン（デプロイ時に設定可能）
+    const allowedOrigins = this.node.tryGetContext('allowedOrigins') as string[] || ['*'];
 
     // S3バケット（RAGドキュメント用）
     const documentBucket = new s3.Bucket(this, 'DocumentBucket', {
@@ -84,16 +88,31 @@ export class IskRagChatSystemStack extends cdk.Stack {
     // Bedrockナレッジベース用のIAMロール
     const knowledgeBaseRole = new iam.Role(this, 'KnowledgeBaseRole', {
       assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonBedrockFullAccess')
-      ],
       inlinePolicies: {
+        BedrockAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'bedrock:InvokeModel',
+                'bedrock:CreateKnowledgeBase',
+                'bedrock:GetKnowledgeBase',
+                'bedrock:ListKnowledgeBases'
+              ],
+              resources: [
+                `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v1`,
+                `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+                `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*`
+              ]
+            })
+          ]
+        }),
         OpenSearchAccess: new iam.PolicyDocument({
           statements: [
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: [
-                'aoss:*'
+                'aoss:APIAccessAll'
               ],
               resources: [`arn:aws:aoss:${this.region}:${this.account}:collection/*`]
             })
@@ -225,11 +244,19 @@ export class IskRagChatSystemStack extends cdk.Stack {
                 'bedrock:InvokeModel',
                 'bedrock-agent:Retrieve'
               ],
-              resources: ['*']
+              resources: [
+                `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-*`,
+                `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*`
+              ]
             })
           ]
         })
       }
+    });
+
+    // Dead Letter Queue for Lambda function
+    const chatDLQ = new sqs.Queue(this, 'ChatFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
     });
 
     // Lambda関数（チャット処理）
@@ -241,6 +268,8 @@ export class IskRagChatSystemStack extends cdk.Stack {
       timeout: Duration.minutes(3),
       memorySize: 1024,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: chatDLQ,
+      reservedConcurrentExecutions: 10,
       environment: {
         KNOWLEDGE_BASE_ID: 'KJWX0LVKWH'
       }
@@ -251,15 +280,24 @@ export class IskRagChatSystemStack extends cdk.Stack {
       restApiName: 'isk-rag-chat-api',
       description: 'ISK RAGチャットシステムAPI',
       defaultCorsPreflightOptions: {
-        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowOrigins: allowedOrigins,
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'Authorization']
       },
       deployOptions: {
         stageName: 'prod',
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
-        dataTraceEnabled: true
+        dataTraceEnabled: false,
+        throttlingRateLimit: 100,
+        throttlingBurstLimit: 200
       }
+    });
+
+    // リクエストバリデーション
+    const requestValidator = new apigateway.RequestValidator(this, 'RequestValidator', {
+      restApi: api,
+      validateRequestBody: true,
+      validateRequestParameters: true
     });
 
     // Cognito認証
@@ -268,10 +306,10 @@ export class IskRagChatSystemStack extends cdk.Stack {
       authorizerName: 'isk-chat-authorizer'
     });
 
-    // API リソースとメソッド（認証付き）
+    // APIリソースとメソッド（認証付き）
     const chatResource = api.root.addResource('chat', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -281,17 +319,6 @@ export class IskRagChatSystemStack extends cdk.Stack {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO
     });
-
-    // テスト用チャットエンドポイント（認証なし）
-    const testChatResource = api.root.addResource('test-chat', {
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
-        allowMethods: ['POST', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'X-Api-Key'],
-        allowCredentials: false
-      }
-    });
-    testChatResource.addMethod('POST', new apigateway.LambdaIntegration(chatFunction));
 
     // ヘルスチェック用（認証不要）
     const healthResource = api.root.addResource('health');

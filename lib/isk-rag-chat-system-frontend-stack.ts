@@ -72,10 +72,10 @@ export class IskRagChatSystemFrontendStack extends cdk.Stack {
       httpVersion: cloudfront.HttpVersion.HTTP2
     };
 
-    // WAFが指定されている場合のみ設定（一時的に無効化）
-    // if (props.webAclArn && props.webAclArn.trim() !== '') {
-    //   distributionConfig.webAclId = props.webAclArn;
-    // }
+    // WAFが指定されている場合のみ設定
+    if (props.webAclArn && props.webAclArn.trim() !== '') {
+      distributionConfig.webAclId = props.webAclArn;
+    }
 
     const distribution = new cloudfront.Distribution(this, 'Distribution', distributionConfig);
 
@@ -111,8 +111,8 @@ export class IskRagChatSystemFrontendStack extends cdk.Stack {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ISK RAG チャットシステム</title>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/aws-amplify@6/dist/aws-amplify.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">

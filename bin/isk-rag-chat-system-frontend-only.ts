@@ -11,11 +11,11 @@ const env = {
   region: 'ap-northeast-1'
 };
 
-// バックエンドスタックから取得した固定値
+// バックエンドスタックから取得した値（CDK Contextから動的に取得）
 const BACKEND_OUTPUTS = {
-  userPoolId: 'ap-northeast-1_TRqpo3mOq',
-  userPoolClientId: '7negaj2hgsaj15kat1v6n4a69r',
-  apiGatewayUrl: 'https://jztwgpdqe8.execute-api.ap-northeast-1.amazonaws.com/prod/'
+  userPoolId: app.node.tryGetContext('userPoolId') || 'REPLACE_ME',
+  userPoolClientId: app.node.tryGetContext('userPoolClientId') || 'REPLACE_ME',
+  apiGatewayUrl: app.node.tryGetContext('apiGatewayUrl') || 'REPLACE_ME'
 };
 
 // Frontend Stack（独立デプロイ版）

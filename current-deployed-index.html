@@ -1742,8 +1742,8 @@
                 this.updateChatArea();
 
                 try {
-                    // 本格的なRAGチャット機能を使用（S3リンク表示対応）
-                    const endpoint = 'test-enhanced-chat';
+                    // 認証付きRAGチャットエンドポイントを使用
+                    const endpoint = 'enhanced-chat';
                     const requestBody = {
                         message: message,
                         personal_prompt: this.personalPrompt, // 個人プロンプトを含める
@@ -1754,17 +1754,18 @@
                     console.log(`📡 RAGチャット ${endpoint} エンドポイント使用:`, requestBody);
                     console.log(`📡 完全なURL:`, fullUrl);
 
-                    // ログイン済みの場合、トークンをリクエストボディに含める（アクセスログ用）
+                    // 認証ヘッダーを設定
                     const savedToken = localStorage.getItem('id_token');
+                    const headers = {
+                        'Content-Type': 'application/json'
+                    };
                     if (savedToken) {
-                        requestBody._auth_token = savedToken;
+                        headers['Authorization'] = savedToken;
                     }
 
                     const response = await fetch(fullUrl, {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
+                        headers: headers,
                         body: JSON.stringify(requestBody)
                     });
 

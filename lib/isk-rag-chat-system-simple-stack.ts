@@ -7,7 +7,10 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatch_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Duration } from 'aws-cdk-lib';
 
 interface IskRagChatSystemSimpleStackProps extends cdk.StackProps {
@@ -26,6 +29,9 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: IskRagChatSystemSimpleStackProps) {
     super(scope, id, props);
+
+    // CORS許可オリジン（デプロイ時に設定可能）
+    const allowedOrigins = this.node.tryGetContext('allowedOrigins') as string[] || ['*'];
 
     // Cognito User Pool
     this.userPool = new cognito.UserPool(this, 'UserPool', {
@@ -96,7 +102,7 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       }],
       // CORS設定（フロントエンドからの直接アップロード用）
       cors: [{
-        allowedOrigins: ['*'], // 本番では特定ドメインに制限
+        allowedOrigins: allowedOrigins, // CDK Contextから取得した特定ドメインに制限
         allowedMethods: [
           s3.HttpMethods.GET,
           s3.HttpMethods.PUT,
@@ -125,8 +131,8 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
 
-    // Lambda関数用のIAMロール
-    const lambdaRole = new iam.Role(this, 'LambdaRole', {
+    // chatFunction用IAMロール（Bedrock + S3 KB docs/temp + Textract/Comprehend）
+    const chatRole = new iam.Role(this, 'ChatLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
@@ -140,13 +146,15 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
                 'bedrock:InvokeModel',
                 'bedrock-agent:Retrieve'
               ],
-              resources: ['*']
+              resources: [
+                `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-*`,
+                `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*`
+              ]
             })
           ]
         }),
         S3Access: new iam.PolicyDocument({
           statements: [
-            // 既存Knowledge Base文書バケットへの読み取りアクセス
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: [
@@ -154,11 +162,10 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
                 's3:ListBucket'
               ],
               resources: [
-                'arn:aws:s3:::isk-rag-documents-144828520862-ap-northeast-1',
-                'arn:aws:s3:::isk-rag-documents-144828520862-ap-northeast-1/*'
+                `arn:aws:s3:::isk-rag-documents-${this.account}-${this.region}`,
+                `arn:aws:s3:::isk-rag-documents-${this.account}-${this.region}/*`
               ]
             }),
-            // 新規一時ファイルバケットへの読み書きアクセス
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: [
@@ -184,6 +191,7 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
                 'comprehend:DetectLanguage',
                 'comprehend:DetectSentiment'
               ],
+              // Textract/Comprehend do not support resource-level permissions
               resources: ['*']
             })
           ]
@@ -191,20 +199,182 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       }
     });
 
-    // Lambda関数（チャット処理）- Enhanced版（ハイブリッド検索対応）
+    // fileUploadFunction用IAMロール（S3 temp + Textract/Comprehend）
+    const fileUploadRole = new iam.Role(this, 'FileUploadLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ],
+      inlinePolicies: {
+        S3Access: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                's3:GetObject',
+                's3:PutObject',
+                's3:DeleteObject',
+                's3:ListBucket'
+              ],
+              resources: [
+                tempFilesBucket.bucketArn,
+                `${tempFilesBucket.bucketArn}/*`
+              ]
+            })
+          ]
+        }),
+        TextractComprehendAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'textract:DetectDocumentText',
+                'textract:AnalyzeDocument',
+                'comprehend:DetectLanguage',
+                'comprehend:DetectSentiment'
+              ],
+              // Textract/Comprehend do not support resource-level permissions
+              resources: ['*']
+            })
+          ]
+        })
+      }
+    });
+
+    // analysisReportFunction用IAMロール（Bedrock + S3 KB docs/temp + Textract/Comprehend）
+    const analysisReportRole = new iam.Role(this, 'AnalysisReportLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ],
+      inlinePolicies: {
+        BedrockAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'bedrock:InvokeModel',
+                'bedrock-agent:Retrieve'
+              ],
+              resources: [
+                `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-*`,
+                `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*`
+              ]
+            })
+          ]
+        }),
+        S3Access: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                's3:GetObject',
+                's3:ListBucket'
+              ],
+              resources: [
+                `arn:aws:s3:::isk-rag-documents-${this.account}-${this.region}`,
+                `arn:aws:s3:::isk-rag-documents-${this.account}-${this.region}/*`
+              ]
+            }),
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                's3:GetObject',
+                's3:PutObject',
+                's3:DeleteObject',
+                's3:ListBucket'
+              ],
+              resources: [
+                tempFilesBucket.bucketArn,
+                `${tempFilesBucket.bucketArn}/*`
+              ]
+            })
+          ]
+        }),
+        TextractComprehendAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'textract:DetectDocumentText',
+                'textract:AnalyzeDocument',
+                'comprehend:DetectLanguage',
+                'comprehend:DetectSentiment'
+              ],
+              // Textract/Comprehend do not support resource-level permissions
+              resources: ['*']
+            })
+          ]
+        })
+      }
+    });
+
+    // sessionManagement用の最小権限IAMロール
+    const sessionManagementRole = new iam.Role(this, 'SessionManagementLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ],
+      inlinePolicies: {
+        S3Access: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                's3:GetObject',
+                's3:PutObject',
+                's3:DeleteObject',
+                's3:ListBucket',
+                's3:HeadObject'
+              ],
+              resources: [
+                tempFilesBucket.bucketArn,
+                `${tempFilesBucket.bucketArn}/*`
+              ]
+            })
+          ]
+        })
+      }
+    });
+
+    // getAnalysisThemes用の最小権限IAMロール
+    const analysisThemesRole = new iam.Role(this, 'AnalysisThemesLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ]
+    });
+
+    // Dead Letter Queues for Lambda functions
+    const chatDLQ = new sqs.Queue(this, 'ChatFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+    const fileUploadDLQ = new sqs.Queue(this, 'FileUploadFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+    const analysisReportDLQ = new sqs.Queue(this, 'AnalysisReportFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+    const sessionManagementDLQ = new sqs.Queue(this, 'SessionManagementFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+
+    // Lambda関数（チャット処理） Enhanced版（ハイブリッド検索対応）
     const chatFunction = new lambda.Function(this, 'ChatFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
       code: lambda.Code.fromAsset('lambda/enhanced-chat'),
-      role: lambdaRole,
+      role: chatRole,
       timeout: Duration.minutes(5), // ハイブリッド検索用に拡張
       memorySize: 2048, // ハイブリッド検索用に拡張
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: chatDLQ,
+      reservedConcurrentExecutions: 10,
       environment: {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
         KNOWLEDGE_BASE_VERSION: '3.0-hybrid',
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
-        LOG_LEVEL: 'DEBUG' // ハイブリッド検索のデバッグ用
+        LOG_LEVEL: 'INFO'
       },
       // X-Ray トレーシング有効化
       tracing: lambda.Tracing.ACTIVE
@@ -215,13 +385,15 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
       code: lambda.Code.fromAsset('lambda/file-upload'),
-      role: lambdaRole, // 同じロールを共有（Textract等の権限を含む）
+      role: fileUploadRole, // ファイルアップロード専用ロール
       timeout: Duration.minutes(5), // ファイル処理用
       memorySize: 2048, // Textract処理用
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: fileUploadDLQ,
+      reservedConcurrentExecutions: 5,
       environment: {
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
-        LOG_LEVEL: 'DEBUG' // デバッグログ有効
+        LOG_LEVEL: 'INFO'
       },
       // X-Ray トレーシング有効化
       tracing: lambda.Tracing.ACTIVE
@@ -232,14 +404,16 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
       code: lambda.Code.fromAsset('lambda/analysis-report'),
-      role: lambdaRole, // 同じロールを共有（全ての権限を含む）
-      timeout: Duration.minutes(8), // 分析処理用に長めに設定
-      memorySize: 3008, // 分析処理用に最大メモリ
+      role: analysisReportRole, // 分析レポート専用ロール
+      timeout: Duration.minutes(5), // 分析処理に適切なタイムアウト
+      memorySize: 2048, // 分析処理に適切なメモリ
       logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: analysisReportDLQ,
+      reservedConcurrentExecutions: 3,
       environment: {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
-        LOG_LEVEL: 'DEBUG' // 分析デバッグ用
+        LOG_LEVEL: 'INFO'
       },
       // X-Ray トレーシング有効化
       tracing: lambda.Tracing.ACTIVE
@@ -250,15 +424,24 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       restApiName: 'isk-rag-chat-api-simple',
       description: 'ISK RAGチャットシステム シンプル版API',
       defaultCorsPreflightOptions: {
-        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowOrigins: allowedOrigins,
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'Authorization']
       },
       deployOptions: {
         stageName: 'prod',
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
-        dataTraceEnabled: true
+        dataTraceEnabled: false,
+        throttlingRateLimit: 100,
+        throttlingBurstLimit: 200
       }
+    });
+
+    // リクエストバリデーション
+    const requestValidator = new apigateway.RequestValidator(this, 'RequestValidator', {
+      restApi: api,
+      validateRequestBody: true,
+      validateRequestParameters: true
     });
 
     // Cognito認証
@@ -267,10 +450,10 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       authorizerName: 'isk-chat-authorizer'
     });
 
-    // API リソースとメソッド（認証付き）
+    // APIリソースとメソッド（認証付き）
     const chatResource = api.root.addResource('chat', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -281,21 +464,10 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO
     });
 
-    // テスト用チャットエンドポイント（認証なし） - 完全CORS対応
-    const testChatResource = api.root.addResource('test-chat', {
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
-        allowMethods: ['POST', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'X-Api-Key'],
-        allowCredentials: false
-      }
-    });
-    testChatResource.addMethod('POST', new apigateway.LambdaIntegration(chatFunction));
-
     // ファイルアップロード用エンドポイント（認証付き）
     const uploadResource = api.root.addResource('upload', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -310,17 +482,17 @@ export class IskRagChatSystemSimpleStack extends cdk.Stack {
       }
     });
 
-    // セッション管理用エンドポイント（認証付き）
+    // セッション管理エンドポイント（認証付き）
     const sessionsResource = api.root.addResource('sessions', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
       }
     });
 
-    // セッション内ファイル管理用のLambda関数（軽量版）
+    // セッション内ファイル管理のLambda関数（軽量版）
     const sessionManagementFunction = new lambda.Function(this, 'SessionManagementFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
@@ -543,9 +715,11 @@ def get_session_info(session_id: str, user_sub: str) -> Dict[str, Any]:
         logger.error(f"Failed to get session info: {e}")
         raise e
       `),
-      role: lambdaRole,
+      role: sessionManagementRole,
       timeout: Duration.minutes(2),
       memorySize: 512, // 軽量処理用
+      deadLetterQueue: sessionManagementDLQ,
+      reservedConcurrentExecutions: 5,
       environment: {
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName
       }
@@ -575,7 +749,7 @@ def get_session_info(session_id: str, user_sub: str) -> Dict[str, Any]:
     // 比較分析レポート生成エンドポイント（認証付き）
     const analyzeResource = api.root.addResource('analyze', {
       defaultCorsPreflightOptions: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: ['POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
         allowCredentials: false
@@ -592,6 +766,9 @@ def get_session_info(session_id: str, user_sub: str) -> Dict[str, Any]:
 
     // 分析テーマ一覧取得エンドポイント（認証付き）
     const analyzeThemesResource = analyzeResource.addResource('themes');
+    const getAnalysisThemesDLQ = new sqs.Queue(this, 'GetAnalysisThemesFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
     const getAnalysisThemesFunction = new lambda.Function(this, 'GetAnalysisThemesFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
@@ -601,7 +778,7 @@ import json
 def handler(event, context):
     themes = {
         'trend_analysis': {
-            'name': '技術トレンド変遷分析',
+            'name': '技術トレンド変化分析',
             'description': '時系列での技術発展や手法の変化を分析',
             'icon': '📈'
         },
@@ -637,7 +814,10 @@ def handler(event, context):
     }
       `),
       timeout: Duration.seconds(30),
-      memorySize: 128
+      memorySize: 128,
+      role: analysisThemesRole,
+      deadLetterQueue: getAnalysisThemesDLQ,
+      reservedConcurrentExecutions: 5
     });
 
     analyzeThemesResource.addMethod('GET', new apigateway.LambdaIntegration(getAnalysisThemesFunction), {
@@ -742,12 +922,21 @@ def handler(event, context):
       displayName: 'ISK RAG System Alerts'
     });
 
+    // SNSサブスクリプション（メール通知）
+    alertTopic.addSubscription(
+      new sns_subscriptions.EmailSubscription(
+        this.node.tryGetContext('alertEmail') || 'admin@example.com'
+      )
+    );
+
     // Lambda関数のエラーアラーム
     const lambdaFunctions = [
       { name: 'Chat', func: chatFunction },
       { name: 'FileUpload', func: fileUploadFunction },
       { name: 'AnalysisReport', func: analysisReportFunction }
     ];
+
+    const snsAction = new cloudwatch_actions.SnsAction(alertTopic);
 
     lambdaFunctions.forEach(({ name, func }) => {
       // エラーアラーム
@@ -759,7 +948,9 @@ def handler(event, context):
         threshold: 1,
         evaluationPeriods: 1,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `${name} Lambda function errors detected`
+        alarmDescription: `${name} Lambda function errors detected`,
+        alarmActions: [snsAction],
+        okActions: [snsAction]
       });
 
       // 実行時間アラーム
@@ -769,11 +960,12 @@ def handler(event, context):
         metric: func.metricDuration({
           period: Duration.minutes(5)
         }),
-        threshold: timeoutThreshold * 60 * 1000, // ミリ秒
-        evaluationPeriods: 2,
+        threshold: timeoutThreshold * 60 * 1000, // ミリ私E        evaluationPeriods: 2,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `${name} Lambda function duration exceeds threshold`
+        alarmDescription: `${name} Lambda function duration exceeds threshold`,
+        alarmActions: [snsAction],
+        okActions: [snsAction]
       });
 
       // スロットリングアラーム
@@ -785,7 +977,9 @@ def handler(event, context):
         threshold: 1,
         evaluationPeriods: 1,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `${name} Lambda function throttling detected`
+        alarmDescription: `${name} Lambda function throttling detected`,
+        alarmActions: [snsAction],
+        okActions: [snsAction]
       });
     });
 
@@ -806,8 +1000,7 @@ def handler(event, context):
       {
         name: 'API-Latency',
         metric: api.metricLatency(),
-        threshold: 10000, // 10秒
-        description: 'High API latency detected'
+        threshold: 10000, // 10私E        description: 'High API latency detected'
       }
     ];
 
@@ -818,7 +1011,9 @@ def handler(event, context):
         threshold,
         evaluationPeriods: 2,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: description
+        alarmDescription: description,
+        alarmActions: [snsAction],
+        okActions: [snsAction]
       });
     });
 
