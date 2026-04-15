@@ -102,6 +102,7 @@ export class IskRagChatSystemStack extends cdk.Stack {
               effect: iam.Effect.ALLOW,
               actions: [
                 'bedrock:InvokeModel',
+                'bedrock:InvokeModelWithResponseStream',
                 'bedrock-runtime:InvokeModel',
                 'bedrock-runtime:InvokeModelWithResponseStream'
               ],
@@ -331,10 +332,25 @@ export class IskRagChatSystemStack extends cdk.Stack {
         allowCredentials: false
       }
     });
-    enhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction), {
+    const enhancedChatMethod = enhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction), {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO
     });
+
+    // ストリーミング対応: InvokeWithResponseStream + ResponseTransferMode: STREAM
+    const cfnMethod = enhancedChatMethod.node.defaultChild as apigateway.CfnMethod;
+    cfnMethod.addPropertyOverride('Integration.ResponseTransferMode', 'STREAM');
+    cfnMethod.addPropertyOverride('Integration.TimeoutInMillis', 300000);
+    // Integration URI を response-streaming-invocations に変更
+    cfnMethod.addPropertyOverride('Integration.Uri', cdk.Fn.join('', [
+      'arn:',
+      cdk.Fn.ref('AWS::Partition'),
+      ':apigateway:',
+      cdk.Fn.ref('AWS::Region'),
+      ':lambda:path/2021-11-15/functions/',
+      enhancedChatFunction.functionArn,
+      '/response-streaming-invocations'
+    ]));
 
     // セッション管理エンドポイント（認証付き）
     const sessionResource = api.root.addResource('session', {
@@ -548,5 +564,6 @@ def handler(event, context):
       value: this.apiGatewayUrl,
       description: 'API Gateway URL'
     });
+
   }
 }

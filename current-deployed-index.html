@@ -1785,23 +1785,15 @@
 
                 if (!message || this.isLoading) return;
 
-                // ユーザーメッセージを追加
                 this.messages.push({
                     type: 'user',
                     content: message,
                     timestamp: new Date()
                 });
 
-                // チャット履歴の自動保存（メッセージ送信のたびに実行）
                 const userMessageCount = this.messages.filter(msg => msg.type === 'user').length;
-                console.log(`🔍 自動保存チェック: userMessageCount=${userMessageCount}, currentChatId=${this.currentChatId}`);
-
                 if (userMessageCount >= 1) {
-                    console.log('📚 チャット履歴を自動保存します（メッセージ送信時の継続更新）');
-                    // 現在のチャットを過去の履歴に自動保存または更新
                     this.autoSaveCurrentChat();
-                } else {
-                    console.log(`📚 自動保存の条件に満たないため、スキップします（メッセージ数: ${userMessageCount}）`);
                 }
 
                 input.value = '';
@@ -1809,40 +1801,29 @@
                 this.updateChatArea();
 
                 try {
-                    // API Gateway 経由でRAGチャット
-                    const endpoint = 'test-enhanced-chat';
-                    const requestBody = {
-                        message: message,
-                        personal_prompt: this.personalPrompt,
-                        session_id: this.currentSession || null
-                    };
-
-                    // API Gateway 経由でRAGチャット
-                    const fullUrl = `${CONFIG.apiGatewayUrl}test-enhanced-chat`;
-                    console.log(`📡 RAGチャット ${endpoint} エンドポイント使用:`, requestBody);
-                    console.log(`📡 完全なURL:`, fullUrl);
-
-                    // トークンはボディに含める（Function URL はAuthorizationヘッダー不可）
-                    const savedToken = localStorage.getItem('id_token');
-                    if (savedToken) {
-                        requestBody._auth_token = savedToken;
-                    }
+                    const fullUrl = `${CONFIG.apiGatewayUrl}enhanced-chat`;
+                    const token = authManager.getAccessToken();
+                    console.log('📡 Enhanced Chat:', fullUrl);
 
                     const response = await fetch(fullUrl, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(requestBody)
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': token || ''
+                        },
+                        body: JSON.stringify({
+                            message: message,
+                            personal_prompt: this.personalPrompt,
+                            session_id: this.currentSession || null
+                        })
                     });
 
-                    console.log(`📡 レスポンスステータス: ${response.status}`);
-                    const responseText = await response.text();
-                    console.log(`📡 レスポンス内容:`, responseText);
-
                     if (!response.ok) {
-                        throw new Error(`API エラー: ${response.status} - ${responseText}`);
+                        const errorText = await response.text();
+                        throw new Error(`API エラー: ${response.status} - ${errorText}`);
                     }
 
-                    const data = JSON.parse(responseText);
+                    const data = await response.json();
                     const fullAnswer = data.answer || '回答を取得できませんでした';
 
                     // AIメッセージを空で追加（タイプライター効果用）
@@ -1865,17 +1846,14 @@
                     // タイプライター効果で表示
                     await this.typewriterEffect(msgIndex, fullAnswer);
 
-                    // 文書生成が完了した場合の通知
                     if (data.document_url) {
                         console.log(`📄 文書が生成されました: ${data.document_url}`);
                     }
 
-                    // チャット履歴を自動更新（応答受信時）
                     this.autoSaveCurrentChat();
 
                 } catch (error) {
                     console.error('Message error:', error);
-
                     this.messages.push({
                         type: 'error',
                         content: `エラー: ${error.message}`,
@@ -1885,8 +1863,6 @@
 
                 this.isLoading = false;
                 this.updateChatArea();
-
-                // スクロールはupdateChatArea()内で自動実行される
             }
         }
 
