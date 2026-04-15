@@ -25,6 +25,10 @@
             max-width: 80%;
             word-wrap: break-word;
         }
+        /* AI回答は幅いっぱいに表示 */
+        .ai-response.message-bubble {
+            max-width: 100%;
+        }
         .isk-gradient {
             background: linear-gradient(135deg, var(--isk-red) 0%, var(--isk-red-dark) 100%);
         }
@@ -131,6 +135,27 @@
             resize: vertical;
             min-height: 100px;
         }
+        /* AI回答のMarkdown表示 */
+        .ai-response table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px; }
+        .ai-response th { background: #f1f5f9; border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; font-weight: 600; }
+        .ai-response td { border: 1px solid #e2e8f0; padding: 6px 10px; }
+        .ai-response tr:hover { background: #f8fafc; }
+        .ai-response h1, .ai-response h2, .ai-response h3 { margin-top: 12px; margin-bottom: 6px; font-weight: 700; }
+        .ai-response h1 { font-size: 1.3em; }
+        .ai-response h2 { font-size: 1.15em; }
+        .ai-response h3 { font-size: 1.05em; }
+        .ai-response ul, .ai-response ol { padding-left: 20px; margin: 4px 0; }
+        .ai-response li { margin: 2px 0; }
+        .ai-response p { margin: 4px 0; }
+        .ai-response hr { border: none; border-top: 1px solid #e2e8f0; margin: 10px 0; }
+        .ai-response blockquote { border-left: 3px solid #C8102E; padding-left: 10px; color: #64748b; margin: 8px 0; }
+        /* コードブロック */
+        .code-block-wrapper { position: relative; margin: 8px 0; }
+        .code-block-wrapper pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+        .code-block-wrapper code { font-family: 'Consolas', 'Monaco', monospace; }
+        .copy-btn { position: absolute; top: 6px; right: 6px; background: #475569; color: #e2e8f0; border: none; padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; opacity: 0.7; }
+        .copy-btn:hover { opacity: 1; background: #64748b; }
+        .ai-response code:not(pre code) { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -146,6 +171,8 @@
     <!-- AWS SDK -->
     <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1542.0.min.js"></script>
     <script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+    <!-- Markdown renderer -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <script>
         // AWS Cognito設定（現在の設定に更新）
@@ -368,10 +395,48 @@
         // グローバル認証管理インスタンス
         const authManager = new AuthManager();
 
-        // Markdownリンクを変換するヘルパー関数
+        // Markdownを変換するヘルパー関数
         function convertMarkdownLinks(text) {
-            // [テキスト](URL) 形式のリンクをHTMLリンクに変換
+            // リンクのみの簡易変換（AI回答以外で使用）
             return text.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 underline">$1</a>');
+        }
+
+        // AI回答用のMarkdown→HTML変換（表・コードブロック・見出し対応）
+        function renderMarkdown(text) {
+            if (typeof marked !== 'undefined') {
+                marked.setOptions({ breaks: true, gfm: true });
+                let html = marked.parse(text);
+                // コードブロックにコピーボタンを追加
+                html = html.replace(/<pre><code(.*?)>([\s\S]*?)<\/code><\/pre>/g, (match, attrs, code) => {
+                    const id = 'code-' + Math.random().toString(36).substr(2, 6);
+                    return `<div class="code-block-wrapper"><button class="copy-btn" onclick="copyCode('${id}')">📋 コピー</button><pre><code${attrs} id="${id}">${code}</code></pre></div>`;
+                });
+                return html;
+            }
+            return convertMarkdownLinks(text);
+        }
+
+        // コードブロックのコピー機能
+        function copyCode(id) {
+            const el = document.getElementById(id);
+            if (el) {
+                navigator.clipboard.writeText(el.textContent).then(() => {
+                    const btn = el.closest('.code-block-wrapper').querySelector('.copy-btn');
+                    if (btn) { btn.textContent = '✅ コピー済み'; setTimeout(() => btn.textContent = '📋 コピー', 2000); }
+                });
+            }
+        }
+
+        // AI回答全体のコピー機能
+        function copyResponse(btn) {
+            const bubble = btn.closest('.message-bubble, .ai-response')?.parentElement?.closest('[data-msg-index]');
+            if (!bubble) return;
+            const content = bubble.querySelector('.msg-content');
+            if (!content) return;
+            navigator.clipboard.writeText(content.innerText).then(() => {
+                btn.textContent = '✅ コピー済み';
+                setTimeout(() => btn.textContent = '📋 回答をコピー', 2000);
+            });
         }
 
         // メインアプリケーション
@@ -668,15 +733,16 @@
 
             // メッセージ内容をフォーマット（Markdownリンク変換等）
             formatMessageContent(content) {
-                return typeof convertMarkdownLinks === 'function'
-                    ? convertMarkdownLinks(content)
+                return typeof renderMarkdown === 'function'
+                    ? renderMarkdown(content)
                     : content.replace(/\n/g, '<br>');
             }
 
             // チャットエリアのみを更新
             updateChatArea() {
                 const messagesHtml = this.messages.map((msg, index) => `
-                    <div class="flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}" data-msg-index="${index}">
+                    <div class="flex ${msg.type === 'user' ? 'justify-end' : 'justify-start w-full'} items-end gap-2" data-msg-index="${index}">
+                        ${msg.type === 'user' ? `<div class="text-xs text-gray-400 mb-1 whitespace-nowrap">${((d) => d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString())(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp))}</div>` : ''}
                         <div class="message-bubble p-4 rounded-lg ${
                             msg.type === 'user'
                                 ? 'text-white isk-gradient'
@@ -684,9 +750,9 @@
                                 ? 'bg-red-100 text-red-800 border border-red-300'
                                 : msg.type === 'system'
                                 ? 'bg-red-50 text-red-800 border border-red-200'
-                                : 'bg-white border border-gray-200 shadow-sm'
+                                : 'ai-response bg-white w-full'
                         }">
-                            <div class="whitespace-pre-wrap msg-content ${msg._typing ? 'typing-cursor' : ''}">${convertMarkdownLinks(msg.content)}</div>
+                            <div class="whitespace-pre-wrap msg-content ${msg._typing ? 'typing-cursor' : ''}">${msg.type === 'assistant' ? renderMarkdown(msg.content) : convertMarkdownLinks(msg.content)}</div>
                             ${msg.document_url ? `
                                 <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded">
                                     <div class="text-sm text-red-800 mb-2">📄 生成された資料</div>
@@ -703,9 +769,9 @@
                                     ${msg.source_links.filter(l => l.source === 'knowledge_base').filter((link, i, arr) => arr.findIndex(x => x.filename === link.filename) === i).map(link => `<div class="truncate"><a href="${link.url || '#'}" target="_blank" class="text-red-600 hover:underline">${decodeURIComponent(link.filename || 'ソース')}</a></div>`).join('')}
                                 </div>
                             ` : ''}
-            ${msg.model && msg.type === 'assistant' ? `<div class="text-xs opacity-70 mt-2">${msg.model}</div>` : ''}
-                            <div class="text-xs opacity-50 mt-2">${(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp)).toLocaleTimeString()}</div>
+            ${msg.model && msg.type === 'assistant' ? `<div class="flex items-center justify-between mt-2"><div class="text-xs opacity-70">${msg.model}</div><button onclick="copyResponse(this)" class="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded hover:bg-gray-100 transition-colors">📋 回答をコピー</button></div>` : ''}
                         </div>
+                        ${msg.type !== 'user' ? `<div class="text-xs text-gray-400 mb-1 whitespace-nowrap">${((d) => d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString())(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp))}</div>` : ''}
                     </div>
                 `).join('');
 
@@ -885,7 +951,8 @@
 
             renderChat() {
                 const messagesHtml = this.messages.map((msg, index) => `
-                    <div class="flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}" data-msg-index="${index}">
+                    <div class="flex ${msg.type === 'user' ? 'justify-end' : 'justify-start w-full'} items-end gap-2" data-msg-index="${index}">
+                        ${msg.type === 'user' ? `<div class="text-xs text-gray-400 mb-1 whitespace-nowrap">${((d) => d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString())(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp))}</div>` : ''}
                         <div class="message-bubble p-4 rounded-lg ${
                             msg.type === 'user'
                                 ? 'text-white isk-gradient'
@@ -893,9 +960,9 @@
                                 ? 'bg-red-100 text-red-800 border border-red-300'
                                 : msg.type === 'system'
                                 ? 'bg-red-50 text-red-800 border border-red-200'
-                                : 'bg-white border border-gray-200 shadow-sm'
+                                : 'ai-response bg-white w-full'
                         }">
-                            <div class="whitespace-pre-wrap msg-content ${msg._typing ? 'typing-cursor' : ''}">${convertMarkdownLinks(msg.content)}</div>
+                            <div class="whitespace-pre-wrap msg-content ${msg._typing ? 'typing-cursor' : ''}">${msg.type === 'assistant' ? renderMarkdown(msg.content) : convertMarkdownLinks(msg.content)}</div>
                             ${msg.document_url ? `
                                 <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded">
                                     <div class="text-sm text-red-800 mb-2">📄 生成された資料</div>
@@ -912,9 +979,9 @@
                                     ${msg.source_links.filter(l => l.source === 'knowledge_base').filter((link, i, arr) => arr.findIndex(x => x.filename === link.filename) === i).map(link => `<div class="truncate"><a href="${link.url || '#'}" target="_blank" class="text-red-600 hover:underline">${decodeURIComponent(link.filename || 'ソース')}</a></div>`).join('')}
                                 </div>
                             ` : ''}
-            ${msg.model && msg.type === 'assistant' ? `<div class="text-xs opacity-70 mt-2">${msg.model}</div>` : ''}
-                            <div class="text-xs opacity-50 mt-2">${(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp)).toLocaleTimeString()}</div>
+            ${msg.model && msg.type === 'assistant' ? `<div class="flex items-center justify-between mt-2"><div class="text-xs opacity-70">${msg.model}</div><button onclick="copyResponse(this)" class="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded hover:bg-gray-100 transition-colors">📋 回答をコピー</button></div>` : ''}
                         </div>
+                        ${msg.type !== 'user' ? `<div class="text-xs text-gray-400 mb-1 whitespace-nowrap">${((d) => d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString())(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp))}</div>` : ''}
                     </div>
                 `).join('');
 
@@ -1025,7 +1092,7 @@
                             <div class="flex-1 flex flex-col">
 
                             <!-- Chat Area -->
-                            <div class="flex-1 chat-container overflow-y-auto p-6 space-y-4 bg-white ${this.dragOver ? 'file-upload-area dragover' : ''}"
+                            <div class="flex-1 chat-container overflow-y-auto px-4 py-3 space-y-4 bg-white ${this.dragOver ? 'file-upload-area dragover' : ''}"
                                  id="chatArea">
 
                                 ${sessionFilesHtml}
@@ -1742,30 +1809,28 @@
                 this.updateChatArea();
 
                 try {
-                    // 認証付きRAGチャットエンドポイントを使用
-                    const endpoint = 'enhanced-chat';
+                    // API Gateway 経由でRAGチャット
+                    const endpoint = 'test-enhanced-chat';
                     const requestBody = {
                         message: message,
-                        personal_prompt: this.personalPrompt, // 個人プロンプトを含める
-                        session_id: this.currentSession || null // アップロードファイル参照用
+                        personal_prompt: this.personalPrompt,
+                        session_id: this.currentSession || null
                     };
 
-                    const fullUrl = `${CONFIG.apiGatewayUrl}/${endpoint}`;
+                    // API Gateway 経由でRAGチャット
+                    const fullUrl = `${CONFIG.apiGatewayUrl}test-enhanced-chat`;
                     console.log(`📡 RAGチャット ${endpoint} エンドポイント使用:`, requestBody);
                     console.log(`📡 完全なURL:`, fullUrl);
 
-                    // 認証ヘッダーを設定
+                    // トークンはボディに含める（Function URL はAuthorizationヘッダー不可）
                     const savedToken = localStorage.getItem('id_token');
-                    const headers = {
-                        'Content-Type': 'application/json'
-                    };
                     if (savedToken) {
-                        headers['Authorization'] = savedToken;
+                        requestBody._auth_token = savedToken;
                     }
 
                     const response = await fetch(fullUrl, {
                         method: 'POST',
-                        headers: headers,
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(requestBody)
                     });
 

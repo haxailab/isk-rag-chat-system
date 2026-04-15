@@ -336,6 +336,19 @@ export class IskRagChatSystemStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO
     });
 
+    // テスト用拡張チャットエンドポイント（認証なし・29秒制限あり）
+    const testEnhancedChatResource = api.root.addResource('test-enhanced-chat', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: ['*'],
+        allowMethods: ['POST', 'OPTIONS'],
+        allowHeaders: ['Content-Type'],
+        allowCredentials: false
+      }
+    });
+    testEnhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction, {
+      timeout: Duration.seconds(29)
+    }));
+
     // セッション管理エンドポイント（認証付き）
     const sessionResource = api.root.addResource('session', {
       defaultCorsPreflightOptions: {
