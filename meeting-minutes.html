@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>議事録自動生成 - ISK AI Assistant</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.6/dist/amazon-cognito-identity.min.js"></script>
+    <style>
+        :root {
+            --isk-red: #DC143C;
+            --isk-red-dark: #B91C3C;
+            --isk-red-light: #FEE2E2;
+        }
+        .isk-gradient {
+            background: linear-gradient(135deg, var(--isk-red) 0%, var(--isk-red-dark) 100%);
+        }
+        .recording-pulse {
+            animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .transcript-area {
+            height: 400px;
+            overflow-y: auto;
+        }
+        .minutes-area {
+            height: 500px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- ヘッダー -->
+    <header class="isk-gradient text-white shadow-md">
+        <div class="container mx-auto px-6 py-4">
+            <div class="flex items-center justify-between">
+                <h1 class="text-2xl font-bold">📝 議事録自動生成</h1>
+                <div id="userInfo" class="text-sm"></div>
+            </div>
+        </div>
+    </header>
+
+    <!-- メインコンテンツ -->
+    <main class="container mx-auto px-6 py-8">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- 左側: 聞き取り・文字起こし -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-bold mb-4">🎤 聞き取り・文字起こし</h2>
+
+                <!-- 聞き取りコントロール -->
+                <div class="mb-6">
+                    <div class="flex items-center gap-4 mb-4">
+                        <button id="startRecordBtn" class="flex items-center gap-2 bg-red-500 text-white px-6 py-3 rounded-lg hover:bg-red-600 transition-colors" onclick="window.handleStartRecording && window.handleStartRecording()">
+                            <span class="text-2xl">🎤</span>
+                            <span>聞き取り開始</span>
+                        </button>
+                        <button id="stopRecordBtn" class="hidden flex items-center gap-2 bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition-colors" onclick="window.handleStopRecording && window.handleStopRecording()">
+                            <span class="text-2xl">⏸️</span>
+                            <span>聞き取り停止</span>
+                        </button>
+                        <div id="recordingIndicator" class="hidden flex items-center gap-2 text-red-600 recording-pulse">
+                            <span class="w-3 h-3 bg-red-600 rounded-full"></span>
+                            <span class="font-semibold">聞き取り中</span>
+                            <span id="recordingTime" class="text-sm">0:00</span>
+                        </div>
+                    </div>
+
+                    <!-- 音声レベルメーター（聞き取り中のみ表示） -->
+                    <div id="audioLevelContainer" class="hidden mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">🎤 音声レベル</label>
+                        <div class="w-full bg-gray-200 rounded-full h-6 overflow-hidden">
+                            <div id="audioLevelBar" class="bg-gradient-to-r from-green-400 via-yellow-400 to-red-500 h-full transition-all duration-100" style="width: 0%"></div>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1">音声が入力されると緑色のバーが動きます</p>
+                    </div>
+
+                    <!-- マイク選択 -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">🎤 マイク</label>
+                        <select id="microphoneSelect" class="w-full border border-gray-300 rounded-lg px-4 py-2" onchange="window.handleMicrophoneChange && window.handleMicrophoneChange()">
+                            <option value="">デフォルトマイク</option>
+                        </select>
+                        <button id="refreshMicBtn" class="mt-2 text-xs text-blue-600 hover:text-blue-800" onclick="window.handleRefreshMicrophones && window.handleRefreshMicrophones()">🔄 マイク一覧を更新</button>
+                    </div>
+
+                    <!-- 言語選択 -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">言語選択</label>
+                        <select id="languageSelect" class="w-full border border-gray-300 rounded-lg px-4 py-2">
+                            <option value="ja-JP">日本語</option>
+                            <option value="en-US">English</option>
+                            <option value="zh-CN">中文</option>
+                            <option value="ko-KR">한국어</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 文字起こしエリア -->
+                <div class="mb-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="block text-sm font-medium text-gray-700">文字起こし</label>
+                        <button id="clearTranscriptBtn" class="text-xs text-gray-500 hover:text-gray-700">🗑️ クリア</button>
+                    </div>
+                    <div id="transcriptArea" class="transcript-area border border-gray-300 rounded-lg p-4 bg-gray-50 overflow-y-auto"></div>
+                </div>
+
+                <!-- 手動入力エリア -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">または手動入力</label>
+                    <textarea id="manualTranscript" class="w-full h-32 border border-gray-300 rounded-lg px-4 py-2" placeholder="ここに文字起こしテキストを貼り付けることもできます..."></textarea>
+                </div>
+            </div>
+
+            <!-- 右側: 議事録生成 -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-bold mb-4">📋 議事録生成</h2>
+
+                <!-- スタイル選択 -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">議事録スタイル</label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button class="style-btn px-4 py-2 border-2 border-gray-300 rounded-lg hover:border-red-500 transition-colors" data-style="summary">
+                            📝 サマリー
+                        </button>
+                        <button class="style-btn px-4 py-2 border-2 border-gray-300 rounded-lg hover:border-red-500 transition-colors" data-style="detail">
+                            📄 詳細
+                        </button>
+                        <button class="style-btn px-4 py-2 border-2 border-red-500 rounded-lg bg-red-50" data-style="newspaper">
+                            📰 記事風
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 生成ボタン -->
+                <button id="generateBtn" class="w-full bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition-colors mb-2" onclick="window.handleGenerateMinutes && window.handleGenerateMinutes()">
+                    ✨ 議事録を生成
+                </button>
+
+                <!-- S3保存ボタン -->
+                <button id="saveToS3Btn" class="w-full bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-colors mb-4 hidden" onclick="window.handleSaveToS3 && window.handleSaveToS3()">
+                    💾 S3に保存
+                </button>
+
+                <!-- 議事録表示エリア -->
+                <div class="mb-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="block text-sm font-medium text-gray-700">生成された議事録</label>
+                        <div class="flex gap-2">
+                            <button id="copyMinutesBtn" class="text-xs text-gray-500 hover:text-gray-700 hidden" onclick="window.handleCopyMinutes && window.handleCopyMinutes()">📋 コピー</button>
+                            <button id="downloadMinutesBtn" class="text-xs text-gray-500 hover:text-gray-700 hidden" onclick="window.handleDownloadMinutes && window.handleDownloadMinutes()">⬇️ ダウンロード</button>
+                        </div>
+                    </div>
+                    <div id="minutesArea" class="minutes-area border border-gray-300 rounded-lg p-4 bg-gray-50 overflow-y-auto">
+                        <p class="text-gray-400 text-center py-8">議事録がここに表示されます</p>
+                    </div>
+
+                    <!-- 音声ファイル再生エリア -->
+                    <div id="audioPlaybackArea" class="mt-4 hidden">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">🔊 音声ファイル</label>
+                        <div id="audioPlayerContainer" class="space-y-2"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 履歴表示 -->
+        <div class="mt-8 bg-white rounded-lg shadow-lg p-6">
+            <h2 class="text-xl font-bold mb-4">📚 過去の議事録</h2>
+            <div id="historyArea" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <p class="text-gray-400 col-span-full text-center py-8">まだ議事録がありません</p>
+            </div>
+        </div>
+    </main>
+
+    <script type="module">
+        // Skypack CDNを使用してES Moduleを読み込み（より互換性が高い）
+        console.log('🚀 Loading AWS SDK modules...');
+
+        const { TranscribeStreamingClient, StartStreamTranscriptionCommand } = await import('https://cdn.skypack.dev/@aws-sdk/client-transcribe-streaming@3.540.0');
+        const { fromCognitoIdentityPool } = await import('https://cdn.skypack.dev/@aws-sdk/credential-provider-cognito-identity@3.540.0');
+
+        console.log('✅ AWS SDK modules loaded');
+
+        // 設定
+        const CONFIG = {
+            region: 'ap-northeast-1',
+            userPoolId: 'ap-northeast-1_zG065zZXu',
+            clientId: '320evpoao9264eh5ounfq8c313',
+            identityPoolId: 'ap-northeast-1:eaa732a1-67a7-4047-9f87-78e52017c701',
+            apiEndpoint: 'https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod'
+        };
+
+        // PCM音声エンコーディング（GenUと同じ実装）
+        function pcmEncodeChunk(chunk) {
+            const input = new Float32Array(chunk);
+            let offset = 0;
+            const buffer = new ArrayBuffer(input.length * 2);
+            const view = new DataView(buffer);
+
+            for (let i = 0; i < input.length; i++, offset += 2) {
+                const s = Math.max(-1, Math.min(1, input[i]));
+                view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+            }
+
+            return new Uint8Array(buffer);
+        }
+
+        // グローバル状態
+        const state = {
+            user: null,
+            idToken: null,
+            recording: false,
+            transcript: '',
+            selectedStyle: 'newspaper',
+            transcribeClient: null,
+            audioStreamProcessor: null,
+            transcribing: false,
+            mediaRecorder: null,
+            audioChunks: [],
+            audioContext: null,
+            analyser: null,
+            recordingStartTime: null,
+            recordingTimer: null,
+            rawTranscripts: [],  // リアルタイム文字起こし結果
+            transcriptSegments: [],  // 確定した文字起こしセグメント
+            selectedMicrophoneId: null,  // 選択されたマイクデバイスID
+            audioFiles: [],  // 複数の音声ファイル（Blob）を保存
+            generatedMinutes: null  // 生成された議事録テキスト
+        };
+
+        // マイクデバイス一覧を取得して表示
+        async function loadMicrophones(requestPermission = false) {
+            const select = document.getElementById('microphoneSelect');
+
+            try {
+                console.log('🔍 マイク一覧取得開始...', requestPermission ? '(権限リクエストあり)' : '(権限リクエストなし)');
+
+                // selectが存在しない場合は終了
+                if (!select) {
+                    console.error('❌ microphoneSelect要素が見つかりません');
+                    return;
+                }
+
+                // navigator.mediaDevicesが利用可能か確認
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    console.error('❌ このブラウザはgetUserMediaに対応していません');
+                    select.innerHTML = '<option value="">❌ このブラウザは非対応</option>';
+                    return;
+                }
+
+                // 権限リクエストが必要な場合のみストリームを取得
+                if (requestPermission) {
+                    console.log('📞 マイク権限をリクエスト中...');
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }
+                    });
+
+                    console.log('✅ マイク権限取得成功');
+
+                    // 権限を得たらすぐストリームを停止
+                    stream.getTracks().forEach(track => {
+                        console.log('🛑 ストリーム停止:', track.label);
+                        track.stop();
+                    });
+
+                    // 少し待ってからデバイス一覧を取得（ブラウザがラベルを更新するまで）
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+
+                // デバイス一覧を取得
+                console.log('📋 enumerateDevices()を呼び出し中...');
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                console.log('📋 全デバイス数:', devices.length);
+
+                const audioInputs = devices.filter(device => device.kind === 'audioinput');
+                console.log('🎤 音声入力デバイス数:', audioInputs.length);
+
+                if (audioInputs.length === 0) {
+                    console.warn('⚠️ 音声入力デバイスが見つかりません');
+                    select.innerHTML = '<option value="">⚠️ マイクが見つかりません</option>';
+                    return;
+                }
+
+                // 各デバイスの詳細をログ出力
+                audioInputs.forEach((device, index) => {
+                    console.log(`  [${index}]`, {
+                        deviceId: device.deviceId,
+                        label: device.label,
+                        groupId: device.groupId,
+                        kind: device.kind
+                    });
+                });
+
+                select.innerHTML = '<option value="">デフォルトマイク（システム設定）</option>';
+
+                // すべてのデバイスを表示
+                audioInputs.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+
+                    // ラベルの決定
+                    if (device.label && device.label !== '') {
+                        option.textContent = device.label;
+                    } else {
+                        // ラベルがない場合は汎用名
+                        option.textContent = `マイク ${index + 1} (ID: ${device.deviceId.substring(0, 8)}...)`;
+                    }
+
+                    select.appendChild(option);
+                    console.log(`  ✓ 追加: ${option.textContent}`);
+                });
+
+                // 選択されているデバイスを復元
+                if (state.selectedMicrophoneId) {
+                    select.value = state.selectedMicrophoneId;
+                }
+
+                console.log(`✅ ${select.options.length - 1}個のマイクをドロップダウンに追加完了`);
+            } catch (error) {
+                console.error('❌ マイク一覧取得エラー:', error);
+                console.error('エラー詳細:', error.name, error.message);
+
+                if (select) {
+                    select.innerHTML = '<option value="">❌ マイクアクセスエラー</option>';
+                }
+
+                if (error.name === 'NotAllowedError') {
+                    alert('マイクへのアクセスが拒否されました。「🔄 マイク一覧を更新」ボタンで再度許可してください。');
+                } else if (error.name === 'NotFoundError') {
+                    alert('マイクが見つかりませんでした。マイクが接続されているか確認してください。');
+                } else {
+                    alert(`マイクエラー: ${error.message}`);
+                }
+            }
+        }
+
+        // マイク選択変更時
+        function onMicrophoneChange() {
+            const select = document.getElementById('microphoneSelect');
+            state.selectedMicrophoneId = select.value;
+
+            const selectedOption = select.options[select.selectedIndex];
+            console.log('🎤 マイク選択:', selectedOption.textContent, '(ID:', state.selectedMicrophoneId || 'default', ')');
+        }
+
+        // Transcribe Streaming Client を初期化
+        async function initTranscribeClient() {
+            if (state.transcribeClient) return state.transcribeClient;
+
+            try {
+                console.log('🔐 Initializing Transcribe client with Identity Pool...');
+
+                const client = new TranscribeStreamingClient({
+                    region: CONFIG.region,
+                    credentials: fromCognitoIdentityPool({
+                        clientConfig: { region: CONFIG.region },
+                        identityPoolId: CONFIG.identityPoolId
+                        // 未認証アクセスを使用（loginsを指定しない）
+                    })
+                });
+
+                state.transcribeClient = client;
+                console.log('✅ Transcribe client initialized');
+                return client;
+            } catch (error) {
+                console.error('❌ Transcribe Client初期化エラー:', error);
+                throw error;
+            }
+        }
+
+        // 初期化関数
+        async function initialize() {
+            console.log('📋 Initializing application...');
+            await initAuth();
+            await initUI();
+            loadHistory();
+
+            // デバイス変更の自動検知（マイクの抜き差しを検知）
+            if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+                navigator.mediaDevices.addEventListener('devicechange', () => {
+                    console.log('🔄 デバイス変更を検知、マイク一覧を更新します...');
+                    loadMicrophones(true);
+                });
+                console.log('✅ デバイス変更監視を開始');
+            } else {
+                console.warn('⚠️ このブラウザはdevicechangeイベントに対応していません');
+            }
+
+            console.log('✅ Initialization complete');
+        }
+
+        // DOMContentLoadedまたは即時実行
+        if (document.readyState === 'loading') {
+            // DOMがまだ読み込み中の場合
+            document.addEventListener('DOMContentLoaded', initialize);
+            console.log('⏳ Waiting for DOMContentLoaded...');
+        } else {
+            // DOMが既に読み込まれている場合（ES Module遅延読み込みの場合）
+            console.log('✅ DOM already loaded, initializing immediately...');
+            initialize();
+        }
+
+        // 認証初期化
+        async function initAuth() {
+            try {
+                // localStorageからIDトークンを取得（dev-index.htmlで認証済みの場合）
+                const idToken = localStorage.getItem('id_token');
+
+                if (idToken) {
+                    state.idToken = idToken;
+
+                    // JWTペイロードをデコード
+                    try {
+                        const payload = JSON.parse(atob(idToken.split('.')[1]));
+                        const username = payload['cognito:username'] || payload.email || 'ユーザー';
+                        state.user = { username };
+                        document.getElementById('userInfo').textContent = `ログイン: ${username}`;
+                        console.log('✅ 認証情報取得成功:', username);
+                    } catch (e) {
+                        console.warn('⚠️ トークンデコードエラー:', e);
+                        state.user = { username: 'test-user' };
+                        document.getElementById('userInfo').textContent = `ログイン: test-user`;
+                    }
+                } else {
+                    console.warn('⚠️ 認証情報が見つかりません。dev-index.htmlからログインしてください。');
+                    state.user = { username: 'guest' };
+                    document.getElementById('userInfo').textContent = `ゲストモード`;
+
+                    // 認証なしの場合は警告を表示
+                    const warningDiv = document.createElement('div');
+                    warningDiv.className = 'bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4';
+                    warningDiv.innerHTML = '<p class="font-bold">⚠️ 認証が必要です</p><p class="text-sm">議事録の保存にはログインが必要です。<a href="dev-index.html" class="underline">こちら</a>からログインしてください。</p>';
+                    document.querySelector('main').insertBefore(warningDiv, document.querySelector('main').firstChild);
+                }
+            } catch (error) {
+                console.error('❌ 認証初期化エラー:', error);
+                state.user = { username: 'guest' };
+                document.getElementById('userInfo').textContent = `エラー`;
+            }
+        }
+
+        // UI初期化
+        async function initUI() {
+            console.log('🎨 Initializing UI...');
+
+            // マイク一覧を読み込み（ページロード時も権限リクエストあり）
+            console.log('🔧 loadMicrophones()を呼び出します（初回読み込み）...');
+            await loadMicrophones(true);  // 権限リクエストあり
+            console.log('🔧 loadMicrophones()完了');
+
+            // スタイル選択
+            document.querySelectorAll('.style-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.style-btn').forEach(b => {
+                        b.classList.remove('border-red-500', 'bg-red-50');
+                        b.classList.add('border-gray-300');
+                    });
+                    btn.classList.remove('border-gray-300');
+                    btn.classList.add('border-red-500', 'bg-red-50');
+                    state.selectedStyle = btn.dataset.style;
+                });
+            });
+
+            // 聞き取り開始
+            const startBtn = document.getElementById('startRecordBtn');
+            console.log('🎤 Start button:', startBtn);
+            if (startBtn) {
+                startBtn.addEventListener('click', async () => {
+                    console.log('🎤 Start button clicked (addEventListener)');
+                    await startRecording();
+                });
+                console.log('✅ Start button listener attached');
+            } else {
+                console.error('❌ Start button not found!');
+            }
+
+            // 聞き取り停止
+            const stopBtn = document.getElementById('stopRecordBtn');
+            console.log('⏸️ Stop button:', stopBtn);
+            if (stopBtn) {
+                stopBtn.addEventListener('click', () => {
+                    console.log('⏸️ Stop button clicked');
+                    stopRecording();
+                });
+                console.log('✅ Stop button listener attached');
+            } else {
+                console.error('❌ Stop button not found!');
+            }
+
+            // 文字起こしクリア
+            document.getElementById('clearTranscriptBtn').addEventListener('click', () => {
+                state.transcript = '';
+                document.getElementById('transcriptArea').innerHTML = '';
+            });
+
+            // 議事録生成
+            document.getElementById('generateBtn').addEventListener('click', generateMinutes);
+
+            // コピー
+            document.getElementById('copyMinutesBtn').addEventListener('click', copyMinutes);
+
+            // 保存
+            document.getElementById('saveMinutesBtn').addEventListener('click', saveMinutes);
+        }
+
+        // 聞き取り開始（グローバルに公開）
+        // グローバル関数としてエクスポート（onclick用）
+        window.handleStartRecording = async function() {
+            console.log('🎤 聞き取り開始ボタンがクリックされました');
+            await startRecording();
+        };
+
+        window.handleRefreshMicrophones = async function() {
+            console.log('🔄 マイク一覧更新ボタンがクリックされました');
+            await loadMicrophones(true);  // 権限リクエストあり
+        };
+
+        window.handleMicrophoneChange = function() {
+            console.log('🎤 マイク選択が変更されました');
+            onMicrophoneChange();
+        };
+
+        window.handleGenerateMinutes = async function() {
+            console.log('✨ 議事録生成ボタンがクリックされました');
+            await generateMinutes();
+        };
+
+        window.handleCopyMinutes = function() {
+            console.log('📋 コピーボタンがクリックされました');
+            copyMinutes();
+        };
+
+        window.handleSaveMinutes = function() {
+            console.log('💾 保存ボタンがクリックされました');
+            saveMinutes();
+        };
+
+        window.handleLoadHistoryItem = async function(key) {
+            console.log('📖 履歴アイテムがクリックされました:', key);
+            await loadHistoryItem(key);
+        };
+
+        window.handleSaveToS3 = async function() {
+            console.log('💾 S3保存ボタンがクリックされました');
+            await saveToS3();
+        };
+
+        window.handleDownloadMinutes = function() {
+            console.log('⬇️ ダウンロードボタンがクリックされました');
+            downloadMinutes();
+        };
+
+        // 聞き取り開始
+        async function startRecording() {
+            try {
+                // マイク設定を準備
+                const audioConstraints = {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                };
+
+                // 特定のマイクが選択されている場合
+                if (state.selectedMicrophoneId) {
+                    audioConstraints.deviceId = { exact: state.selectedMicrophoneId };
+                    console.log('🎤 選択されたマイクを使用:', state.selectedMicrophoneId);
+                } else {
+                    console.log('🎤 デフォルトマイクを使用');
+                }
+
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: audioConstraints
+                });
+
+                // MediaRecorderで音声を記録
+                state.mediaRecorder = new MediaRecorder(stream);
+                state.audioChunks = [];
+
+                state.mediaRecorder.ondataavailable = (event) => {
+                    state.audioChunks.push(event.data);
+                };
+
+                // 停止時に音声Blobを保存
+                state.mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(state.audioChunks, { type: 'audio/webm' });
+                    state.audioFiles.push(audioBlob);
+                    console.log(`✅ 音声ファイル #${state.audioFiles.length} を保存 (${(audioBlob.size / 1024).toFixed(1)} KB)`);
+                    state.audioChunks = [];
+                };
+
+                state.mediaRecorder.start();
+                state.recording = true;
+
+                // 音声レベル検出の初期化
+                initAudioLevelDetection(stream);
+
+                // 聞き取り時間カウンター開始
+                state.recordingStartTime = Date.now();
+                updateRecordingTime();
+
+                // UI更新
+                document.getElementById('startRecordBtn').classList.add('hidden');
+                document.getElementById('stopRecordBtn').classList.remove('hidden');
+                document.getElementById('recordingIndicator').classList.remove('hidden');
+                document.getElementById('audioLevelContainer').classList.remove('hidden');
+
+                // AWS Transcribe Streamingを開始
+                await startTranscription(stream);
+
+            } catch (error) {
+                console.error('聞き取り開始エラー:', error);
+                alert('マイクへのアクセスが拒否されました');
+            }
+        }
+
+        // 音声レベル検出の初期化
+        function initAudioLevelDetection(stream) {
+            state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            state.analyser = state.audioContext.createAnalyser();
+            const microphone = state.audioContext.createMediaStreamSource(stream);
+
+            state.analyser.fftSize = 256;
+            microphone.connect(state.analyser);
+
+            // 音声レベルの更新ループ
+            updateAudioLevel();
+        }
+
+        // 音声レベルの更新
+        function updateAudioLevel() {
+            if (!state.recording || !state.analyser) return;
+
+            const dataArray = new Uint8Array(state.analyser.frequencyBinCount);
+            state.analyser.getByteFrequencyData(dataArray);
+
+            // 平均音声レベルを計算
+            const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+            const percentage = Math.min(100, (average / 128) * 100);
+
+            // レベルバーを更新
+            const levelBar = document.getElementById('audioLevelBar');
+            if (levelBar) {
+                levelBar.style.width = percentage + '%';
+            }
+
+            // 継続的に更新
+            if (state.recording) {
+                requestAnimationFrame(updateAudioLevel);
+            }
+        }
+
+        // 聞き取り時間の更新
+        function updateRecordingTime() {
+            if (!state.recording) return;
+
+            const elapsed = Math.floor((Date.now() - state.recordingStartTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+
+            const timeDisplay = document.getElementById('recordingTime');
+            if (timeDisplay) {
+                timeDisplay.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+
+            // 1秒ごとに更新
+            state.recordingTimer = setTimeout(updateRecordingTime, 1000);
+        }
+
+        // 聞き取り停止（グローバルに公開）
+        window.handleStopRecording = function() {
+            console.log('⏸️ 聞き取り停止ボタンがクリックされました');
+            stopRecording();
+        };
+
+        // 聞き取り停止
+        function stopRecording() {
+            console.log('🛑 聞き取り停止処理開始...');
+
+            // 聞き取りフラグを最初に停止
+            state.recording = false;
+            state.transcribing = false;
+
+            // Audio Processor を先に停止
+            if (state.audioStreamProcessor) {
+                try {
+                    state.audioStreamProcessor.stop();
+                    console.log('✅ AudioProcessor停止');
+                } catch (e) {
+                    console.log('AudioProcessor停止エラー:', e);
+                }
+                state.audioStreamProcessor = null;
+            }
+
+            // MediaRecorderを停止
+            if (state.mediaRecorder) {
+                try {
+                    state.mediaRecorder.stop();
+                    console.log('✅ MediaRecorder停止');
+
+                    // ストリームを停止
+                    if (state.mediaRecorder.stream) {
+                        state.mediaRecorder.stream.getTracks().forEach(track => {
+                            track.stop();
+                            console.log('✅ Track停止:', track.kind);
+                        });
+                    }
+                } catch (e) {
+                    console.log('MediaRecorder停止エラー:', e);
+                }
+                state.mediaRecorder = null;
+            }
+
+            // タイマーを停止
+            if (state.recordingTimer) {
+                clearTimeout(state.recordingTimer);
+                state.recordingTimer = null;
+            }
+
+            // AudioContextをクローズ
+            if (state.audioContext) {
+                try {
+                    state.audioContext.close();
+                    console.log('✅ AudioContext停止');
+                } catch (e) {
+                    console.log('AudioContext停止エラー:', e);
+                }
+                state.audioContext = null;
+                state.analyser = null;
+            }
+
+            // UI更新
+            document.getElementById('startRecordBtn').classList.remove('hidden');
+            document.getElementById('stopRecordBtn').classList.add('hidden');
+            document.getElementById('recordingIndicator').classList.add('hidden');
+            document.getElementById('audioLevelContainer').classList.add('hidden');
+
+            // レベルバーをリセット
+            document.getElementById('audioLevelBar').style.width = '0%';
+
+            // 暫定表示を削除
+            const partialElement = document.getElementById('transcriptArea').querySelector('.transcript-partial');
+            if (partialElement) {
+                partialElement.remove();
+            }
+
+            console.log('✅ 聞き取り停止完了');
+        }
+
+        // Web Audio APIベースの音声ストリーム生成（改良版）
+        function createAudioStream(stream) {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+            const source = audioContext.createMediaStreamSource(stream);
+            const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+            let isProcessing = true;
+            let chunkCount = 0;
+
+            // 非同期ジェネレーター用のプロミスキュー
+            const chunkQueue = [];
+            let resolveNext = null;
+
+            processor.onaudioprocess = (e) => {
+                if (!isProcessing || !state.recording) return;
+
+                const inputData = e.inputBuffer.getChannelData(0);
+                const pcmData = pcmEncodeChunk(inputData);
+
+                chunkCount++;
+
+                // チャンクをキューに追加
+                if (resolveNext) {
+                    resolveNext(pcmData);
+                    resolveNext = null;
+                } else {
+                    chunkQueue.push(pcmData);
+                }
+            };
+
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+
+            console.log('🎧 Audio processor started');
+
+            // 非同期ジェネレーター
+            return {
+                async *stream() {
+                    console.log('📡 Audio stream generator started');
+                    try {
+                        while (isProcessing && state.recording) {
+                            let pcmData;
+
+                            if (chunkQueue.length > 0) {
+                                pcmData = chunkQueue.shift();
+                            } else {
+                                // 新しいチャンクを待つ
+                                pcmData = await new Promise(resolve => {
+                                    resolveNext = resolve;
+                                    // タイムアウト
+                                    setTimeout(() => {
+                                        if (resolveNext === resolve) {
+                                            resolveNext = null;
+                                            resolve(null);
+                                        }
+                                    }, 200);
+                                });
+                            }
+
+                            if (pcmData) {
+                                yield {
+                                    AudioEvent: {
+                                        AudioChunk: pcmData
+                                    }
+                                };
+                            }
+                        }
+                    } finally {
+                        console.log(`📡 Audio stream ended (${chunkCount} chunks processed)`);
+                    }
+                },
+                stop() {
+                    console.log('🛑 Stopping audio processor...');
+                    isProcessing = false;
+
+                    try {
+                        processor.disconnect();
+                        source.disconnect();
+                        audioContext.close();
+                        console.log('✅ Audio processor stopped');
+                    } catch (e) {
+                        console.log('Audio processor cleanup:', e);
+                    }
+                }
+            };
+        }
+
+        // AWS Transcribe Streaming開始
+        async function startTranscription(stream) {
+            // 既に実行中の場合はスキップ
+            if (state.transcribing) {
+                console.log('⚠️ Transcription already in progress');
+                return;
+            }
+
+            state.transcribing = true;
+
+            try {
+                const languageCode = document.getElementById('languageSelect').value;
+                const client = await initTranscribeClient();
+
+                // 音声ストリームを生成
+                const audioStreamObj = createAudioStream(stream);
+                state.audioStreamProcessor = audioStreamObj;
+
+                // Transcribe コマンドを作成
+                const command = new StartStreamTranscriptionCommand({
+                    LanguageCode: languageCode,
+                    MediaEncoding: 'pcm',
+                    MediaSampleRateHertz: 48000,
+                    AudioStream: audioStreamObj.stream(),
+                    ShowSpeakerLabel: false
+                });
+
+                // ストリーミング開始
+                console.log('📡 Transcribe Streaming開始...');
+                const response = await client.send(command);
+
+                // リアルタイムで文字起こし結果を処理
+                if (response.TranscriptResultStream) {
+                    for await (const event of response.TranscriptResultStream) {
+                        if (!state.recording) break;
+
+                        if (event.TranscriptEvent?.Transcript?.Results) {
+                            const results = event.TranscriptEvent.Transcript.Results;
+
+                            for (const result of results) {
+                                if (!result.Alternatives || result.Alternatives.length === 0) continue;
+
+                                const transcript = result.Alternatives[0].Transcript;
+                                if (!transcript) continue;
+
+                                const isPartial = result.IsPartial || false;
+                                const resultId = result.ResultId || `result-${Date.now()}`;
+
+                                // UI更新
+                                updateTranscriptUI(transcript, isPartial, resultId);
+
+                                // 確定結果を保存
+                                if (!isPartial) {
+                                    state.transcriptSegments.push({
+                                        id: resultId,
+                                        text: transcript,
+                                        timestamp: new Date().toISOString()
+                                    });
+                                    state.transcript += transcript + ' ';
+                                }
+                            }
+                        }
+                    }
+                }
+
+                console.log('✅ Transcribe Streaming完了');
+            } catch (error) {
+                console.error('❌ Transcribe Streamingエラー:', error);
+                alert('文字起こしエラー: ' + error.message);
+            } finally {
+                state.transcribing = false;
+            }
+        }
+
+        // 文字起こし結果をUIに反映
+        function updateTranscriptUI(text, isPartial, resultId) {
+            const transcriptArea = document.getElementById('transcriptArea');
+
+            if (isPartial) {
+                // 暫定結果: 既存の暫定表示を更新
+                let partialElement = transcriptArea.querySelector('.transcript-partial');
+                if (!partialElement) {
+                    partialElement = document.createElement('p');
+                    partialElement.className = 'transcript-partial mb-2 text-gray-500 italic';
+                    transcriptArea.appendChild(partialElement);
+                }
+                partialElement.textContent = text;
+            } else {
+                // 確定結果: 暫定表示を削除して確定表示を追加
+                const partialElement = transcriptArea.querySelector('.transcript-partial');
+                if (partialElement) {
+                    partialElement.remove();
+                }
+
+                const finalElement = document.createElement('p');
+                finalElement.className = 'transcript-final mb-2 text-gray-900';
+                finalElement.textContent = text;
+                finalElement.dataset.resultId = resultId;
+                transcriptArea.appendChild(finalElement);
+            }
+
+            // 自動スクロール
+            transcriptArea.scrollTop = transcriptArea.scrollHeight;
+        }
+
+        // 議事録生成（生成のみ、保存なし）
+        async function generateMinutes() {
+            const transcript = state.transcript || document.getElementById('manualTranscript').value;
+
+            if (!transcript.trim()) {
+                alert('文字起こしテキストを入力してください');
+                return;
+            }
+
+            const generateBtn = document.getElementById('generateBtn');
+            generateBtn.disabled = true;
+            generateBtn.innerHTML = '<div class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>生成中...';
+
+            try {
+                // API呼び出し（生成のみ）
+                const response = await fetch(`${CONFIG.apiEndpoint}/meeting-minutes`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': state.idToken || ''
+                    },
+                    body: JSON.stringify({
+                        action: 'generate',
+                        transcript: transcript,
+                        style: state.selectedStyle
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('議事録生成に失敗しました');
+                }
+
+                const data = await response.json();
+
+                // 議事録を状態に保存
+                state.generatedMinutes = data.minutes;
+
+                // 議事録表示
+                const minutesArea = document.getElementById('minutesArea');
+                minutesArea.innerHTML = marked.parse(data.minutes);
+
+                // ボタン表示
+                document.getElementById('copyMinutesBtn').classList.remove('hidden');
+                document.getElementById('downloadMinutesBtn').classList.remove('hidden');
+                document.getElementById('saveToS3Btn').classList.remove('hidden');
+
+                // 音声ファイルがある場合は情報表示
+                if (state.audioFiles.length > 0) {
+                    const saveBtn = document.getElementById('saveToS3Btn');
+                    saveBtn.innerHTML = `💾 S3に保存 (音声ファイル${state.audioFiles.length}個含む)`;
+                }
+
+            } catch (error) {
+                console.error('議事録生成エラー:', error);
+                alert('議事録の生成に失敗しました: ' + error.message);
+            } finally {
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '✨ 議事録を生成';
+            }
+        }
+
+        // 議事録コピー
+        function copyMinutes() {
+            const minutesArea = document.getElementById('minutesArea');
+            const text = minutesArea.innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                alert('議事録をコピーしました');
+            });
+        }
+
+        // S3に保存
+        async function saveToS3() {
+            if (!state.generatedMinutes) {
+                alert('先に議事録を生成してください');
+                return;
+            }
+
+            const saveBtn = document.getElementById('saveToS3Btn');
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = '<div class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>保存中...';
+
+            try {
+                // 音声ファイルをbase64に変換
+                const audioFilesBase64 = [];
+                for (const audioBlob of state.audioFiles) {
+                    const base64 = await blobToBase64(audioBlob);
+                    audioFilesBase64.push(base64);
+                }
+
+                const transcript = state.transcript || document.getElementById('manualTranscript').value;
+
+                // API呼び出し（保存）
+                const response = await fetch(`${CONFIG.apiEndpoint}/meeting-minutes`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': state.idToken || ''
+                    },
+                    body: JSON.stringify({
+                        action: 'save',
+                        transcript: transcript,
+                        minutes: state.generatedMinutes,
+                        style: state.selectedStyle,
+                        audioFiles: audioFilesBase64
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('S3への保存に失敗しました');
+                }
+
+                const data = await response.json();
+
+                alert(`保存完了！\n議事録: ${data.minutesKey}\n音声ファイル: ${data.audioKeys?.length || 0}個`);
+
+                // 履歴更新
+                loadHistory();
+
+                // 保存ボタンを非表示（既に保存済み）
+                saveBtn.classList.add('hidden');
+
+            } catch (error) {
+                console.error('S3保存エラー:', error);
+                alert('S3への保存に失敗しました: ' + error.message);
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = `💾 S3に保存 (音声ファイル${state.audioFiles.length}個含む)`;
+            }
+        }
+
+        // BlobをBase64に変換
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        // 議事録ダウンロード（ローカル）
+        function downloadMinutes() {
+            const minutesArea = document.getElementById('minutesArea');
+            const text = minutesArea.innerText;
+            const blob = new Blob([text], { type: 'text/plain; charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `議事録_${new Date().toISOString().slice(0, 10)}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 履歴読み込み
+        async function loadHistory() {
+            try {
+                const response = await fetch(`${CONFIG.apiEndpoint}/meeting-minutes`, {
+                    headers: {
+                        'Authorization': state.idToken || ''
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('履歴の取得に失敗しました');
+                }
+
+                const data = await response.json();
+
+                const historyArea = document.getElementById('historyArea');
+                if (data.items && data.items.length > 0) {
+                    historyArea.innerHTML = data.items.map((item, index) => `
+                        <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-red-300 transition-all cursor-pointer" onclick="window.handleLoadHistoryItem && window.handleLoadHistoryItem('${item.key.replace(/'/g, "\\'")}')">
+                            <div class="flex items-start justify-between mb-2">
+                                <div class="text-sm font-medium text-gray-700">議事録 #${data.items.length - index}</div>
+                                <div class="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">${item.metadata?.style || 'サマリー'}</div>
+                            </div>
+                            <div class="text-sm text-gray-500 mb-1">${new Date(item.lastModified).toLocaleString('ja-JP')}</div>
+                            <div class="text-xs text-gray-400">${formatFileSize(item.size)}</div>
+                        </div>
+                    `).join('');
+                } else {
+                    historyArea.innerHTML = '<p class="text-gray-400 col-span-full text-center py-8">まだ議事録がありません</p>';
+                }
+            } catch (error) {
+                console.error('履歴読み込みエラー:', error);
+            }
+        }
+
+        // 過去の議事録を読み込む
+        async function loadHistoryItem(key) {
+            try {
+                console.log('📖 議事録を読み込み中:', key);
+
+                const response = await fetch(`${CONFIG.apiEndpoint}/meeting-minutes?key=${encodeURIComponent(key)}`, {
+                    headers: {
+                        'Authorization': state.idToken || ''
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('議事録の取得に失敗しました');
+                }
+
+                const data = await response.json();
+
+                // 議事録表示
+                const minutesArea = document.getElementById('minutesArea');
+                minutesArea.innerHTML = marked.parse(data.content || data.minutes || data);
+
+                // ボタン表示
+                document.getElementById('copyMinutesBtn').classList.remove('hidden');
+                document.getElementById('downloadMinutesBtn').classList.remove('hidden');
+
+                // 音声ファイルがある場合は表示
+                if (data.audioFiles && data.audioFiles.length > 0) {
+                    displayAudioPlayers(data.audioFiles);
+                } else {
+                    // 音声ファイルエリアを非表示
+                    document.getElementById('audioPlaybackArea').classList.add('hidden');
+                }
+
+                // スクロールして議事録エリアを表示
+                minutesArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                console.log('✅ 議事録読み込み完了');
+            } catch (error) {
+                console.error('議事録読み込みエラー:', error);
+                alert('議事録の読み込みに失敗しました: ' + error.message);
+            }
+        }
+
+        // 音声ファイル表示
+        async function displayAudioPlayers(audioFiles) {
+            const container = document.getElementById('audioPlayerContainer');
+            const area = document.getElementById('audioPlaybackArea');
+
+            container.innerHTML = '';
+
+            for (let i = 0; i < audioFiles.length; i++) {
+                const audioFile = audioFiles[i];
+
+                // S3から音声ファイルの署名付きURLを取得（本来はLambda経由で取得すべき）
+                // ここでは簡易的にS3オブジェクトキーを表示
+                const playerDiv = document.createElement('div');
+                playerDiv.className = 'flex items-center gap-2 p-2 border border-gray-200 rounded';
+                playerDiv.innerHTML = `
+                    <span class="text-sm font-medium">🎵 音声 #${i + 1}</span>
+                    <span class="text-xs text-gray-500">(${formatFileSize(audioFile.size)})</span>
+                    <button class="ml-auto text-xs bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600" onclick="alert('音声再生機能は準備中です')">
+                        ▶️ 再生
+                    </button>
+                `;
+
+                container.appendChild(playerDiv);
+            }
+
+            area.classList.remove('hidden');
+        }
+
+        // ファイルサイズフォーマット
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+        }
+    </script>
+</body>
+</html>

@@ -40,6 +40,22 @@ export class IskRagChatSystemStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY // 開発用
     });
 
+    // S3バケット（議事録保存用） 音声ファイルと議事録を永続保存
+    const meetingMinutesBucket = new s3.Bucket(this, 'MeetingMinutesBucket', {
+      bucketName: `isk-meeting-minutes-${this.account}-${this.region}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true, // バージョニング有効
+      lifecycleRules: [{
+        id: 'archive-old-minutes',
+        transitions: [{
+          storageClass: s3.StorageClass.GLACIER,
+          transitionAfter: Duration.days(90) // 90日後にGlacierへ
+        }]
+      }],
+      removalPolicy: cdk.RemovalPolicy.RETAIN // 本番用：削除しない
+    });
+
     // DynamoDB アクセスログテーブル
     const accessLogTable = new dynamodb.Table(this, 'AccessLogTable', {
       tableName: 'isk-rag-access-log',
@@ -87,6 +103,77 @@ export class IskRagChatSystemStack extends cdk.Stack {
       refreshTokenValidity: Duration.days(30),
       accessTokenValidity: Duration.hours(1),
       idTokenValidity: Duration.hours(1)
+    });
+
+    // Cognito Identity Pool (Transcribe Streaming用)
+    const identityPool = new cognito.CfnIdentityPool(this, 'IdentityPool', {
+      identityPoolName: 'isk-rag-identity-pool',
+      allowUnauthenticatedIdentities: true,  // 未認証アクセスを許可（開発用）
+      cognitoIdentityProviders: [{
+        clientId: this.userPoolClient.userPoolClientId,
+        providerName: this.userPool.userPoolProviderName
+      }]
+    });
+
+    // Identity Pool用の認証ロール
+    const authenticatedRole = new iam.Role(this, 'IdentityPoolAuthenticatedRole', {
+      assumedBy: new iam.FederatedPrincipal('cognito-identity.amazonaws.com', {
+        StringEquals: {
+          'cognito-identity.amazonaws.com:aud': identityPool.ref
+        },
+        'ForAnyValue:StringLike': {
+          'cognito-identity.amazonaws.com:amr': 'authenticated'
+        }
+      }, 'sts:AssumeRoleWithWebIdentity'),
+      inlinePolicies: {
+        TranscribeStreamingAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'transcribe:StartStreamTranscription',
+                'transcribe:StartStreamTranscriptionWebSocket'  // WebSocket用の権限を追加
+              ],
+              resources: ['*']
+            })
+          ]
+        })
+      }
+    });
+
+    // 未認証ロール
+    const unauthenticatedRole = new iam.Role(this, 'IdentityPoolUnauthenticatedRole', {
+      assumedBy: new iam.FederatedPrincipal('cognito-identity.amazonaws.com', {
+        StringEquals: {
+          'cognito-identity.amazonaws.com:aud': identityPool.ref
+        },
+        'ForAnyValue:StringLike': {
+          'cognito-identity.amazonaws.com:amr': 'unauthenticated'
+        }
+      }, 'sts:AssumeRoleWithWebIdentity'),
+      inlinePolicies: {
+        TranscribeStreamingAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'transcribe:StartStreamTranscription',
+                'transcribe:StartStreamTranscriptionWebSocket'  // WebSocket用の権限を追加
+              ],
+              resources: ['*']
+            })
+          ]
+        })
+      }
+    });
+
+    // Identity Poolにロールをアタッチ
+    new cognito.CfnIdentityPoolRoleAttachment(this, 'IdentityPoolRoleAttachment', {
+      identityPoolId: identityPool.ref,
+      roles: {
+        authenticated: authenticatedRole.roleArn,
+        unauthenticated: unauthenticatedRole.roleArn
+      }
     });
 
     // Lambda関数用のIAMロール（拡張版）
@@ -154,9 +241,24 @@ export class IskRagChatSystemStack extends cdk.Stack {
               resources: [
                 tempFilesBucket.bucketArn,
                 `${tempFilesBucket.bucketArn}/*`,
+                meetingMinutesBucket.bucketArn,
+                `${meetingMinutesBucket.bucketArn}/*`,
                 'arn:aws:s3:::isk-rag-documents-*',  // Knowledge Base用S3バケット
                 'arn:aws:s3:::isk-rag-documents-*/*'
               ]
+            })
+          ]
+        }),
+        TranscribeAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'transcribe:StartStreamTranscription',
+                'transcribe:StartTranscriptionJob',
+                'transcribe:GetTranscriptionJob'
+              ],
+              resources: ['*'] // Transcribeはリソースレベル権限をサポートしない
             })
           ]
         }),
@@ -208,6 +310,9 @@ export class IskRagChatSystemStack extends cdk.Stack {
     const accessLogDLQ = new sqs.Queue(this, 'AccessLogFunctionDLQ', {
       retentionPeriod: Duration.days(14)
     });
+    const meetingMinutesDLQ = new sqs.Queue(this, 'MeetingMinutesFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
 
     // Lambda関数（ファイルアップロード処理）
     const fileUploadFunction = new lambda.Function(this, 'FileUploadFunction', {
@@ -246,6 +351,30 @@ export class IskRagChatSystemStack extends cdk.Stack {
       }
     });
 
+    // ========== 開発環境用 Lambda関数（実験用・本番と並列） ==========
+    const enhancedChatDevDLQ = new sqs.Queue(this, 'EnhancedChatDevFunctionDLQ', {
+      retentionPeriod: Duration.days(14)
+    });
+
+    const enhancedChatDevFunction = new lambda.Function(this, 'EnhancedChatDevFunction', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/enhanced-chat-dev'),
+      role: lambdaRole,
+      timeout: Duration.minutes(5),
+      memorySize: 2048,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: enhancedChatDevDLQ,
+      reservedConcurrentExecutions: 5,
+      environment: {
+        KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
+        TEMP_FILES_BUCKET: tempFilesBucket.bucketName,
+        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
+        ACCESS_LOG_TABLE: accessLogTable.tableName,
+        ENVIRONMENT: 'dev'
+      }
+    });
+
     // Lambda関数（チャット処理） 既存
     const chatFunction = new lambda.Function(this, 'ChatFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -261,6 +390,27 @@ export class IskRagChatSystemStack extends cdk.Stack {
         KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
         CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
         ACCESS_LOG_TABLE: accessLogTable.tableName
+      }
+    });
+
+    // マルチエージェント議論システムLambda
+    const multiAgentFunction = new lambda.Function(this, 'MultiAgentDiscussionFunction', {
+      functionName: 'MultiAgentDiscussionFunction',
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/multi-agent-discussion'),
+      role: lambdaRole,
+      timeout: Duration.minutes(5),  // 複数エージェント実行のため長めに設定
+      memorySize: 2048,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: chatDLQ,
+      reservedConcurrentExecutions: 5,  // 並列実行数制限
+      environment: {
+        KNOWLEDGE_BASE_ID: 'LK9Z59ROMF',
+        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
+        ACCESS_LOG_TABLE: accessLogTable.tableName,
+        USER_POOL_ID: this.userPool.userPoolId,
+        AWS_REGION: this.region
       }
     });
 
@@ -280,6 +430,32 @@ export class IskRagChatSystemStack extends cdk.Stack {
         throttlingRateLimit: 100,
         throttlingBurstLimit: 200
       }
+    });
+
+    // 認証エラー(401)などのデフォルトレスポンスにも CORS ヘッダーを付与
+    // (ブラウザが「CORS エラー」として表示するのを防ぎ、実際のエラー内容を見えるようにする)
+    const corsGatewayHeaders = {
+      'Access-Control-Allow-Origin': "'*'",
+      'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+      'Access-Control-Allow-Methods': "'POST,GET,DELETE,OPTIONS'"
+    };
+    api.addGatewayResponse('Unauthorized', {
+      type: apigateway.ResponseType.UNAUTHORIZED,
+      statusCode: '401',
+      responseHeaders: corsGatewayHeaders
+    });
+    api.addGatewayResponse('AccessDenied', {
+      type: apigateway.ResponseType.ACCESS_DENIED,
+      statusCode: '403',
+      responseHeaders: corsGatewayHeaders
+    });
+    api.addGatewayResponse('Default4XX', {
+      type: apigateway.ResponseType.DEFAULT_4XX,
+      responseHeaders: corsGatewayHeaders
+    });
+    api.addGatewayResponse('Default5XX', {
+      type: apigateway.ResponseType.DEFAULT_5XX,
+      responseHeaders: corsGatewayHeaders
     });
 
     // リクエストバリデーション
@@ -332,25 +508,28 @@ export class IskRagChatSystemStack extends cdk.Stack {
         allowCredentials: false
       }
     });
-    const enhancedChatMethod = enhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction), {
+    enhancedChatResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatFunction, {
+      timeout: Duration.seconds(29)
+    }), {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO
     });
 
-    // ストリーミング対応: InvokeWithResponseStream + ResponseTransferMode: STREAM
-    const cfnMethod = enhancedChatMethod.node.defaultChild as apigateway.CfnMethod;
-    cfnMethod.addPropertyOverride('Integration.ResponseTransferMode', 'STREAM');
-    cfnMethod.addPropertyOverride('Integration.TimeoutInMillis', 300000);
-    // Integration URI を response-streaming-invocations に変更
-    cfnMethod.addPropertyOverride('Integration.Uri', cdk.Fn.join('', [
-      'arn:',
-      cdk.Fn.ref('AWS::Partition'),
-      ':apigateway:',
-      cdk.Fn.ref('AWS::Region'),
-      ':lambda:path/2021-11-15/functions/',
-      enhancedChatFunction.functionArn,
-      '/response-streaming-invocations'
-    ]));
+    // ========== 開発環境用エンドポイント（本番と同じ Cognito User Pool を共有） ==========
+    const enhancedChatDevResource = api.root.addResource('enhanced-chat-dev', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: ['*'],
+        allowMethods: ['POST', 'OPTIONS'],
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
+        allowCredentials: false
+      }
+    });
+    enhancedChatDevResource.addMethod('POST', new apigateway.LambdaIntegration(enhancedChatDevFunction, {
+      timeout: Duration.seconds(29)
+    }), {
+      authorizer,  // 本番と同じ authorizer を共有
+      authorizationType: apigateway.AuthorizationType.COGNITO
+    });
 
     // セッション管理エンドポイント（認証付き）
     const sessionResource = api.root.addResource('session', {
@@ -387,6 +566,24 @@ export class IskRagChatSystemStack extends cdk.Stack {
       reservedConcurrentExecutions: 5,
       environment: {
         TEMP_FILES_BUCKET: tempFilesBucket.bucketName
+      }
+    });
+
+    // 議事録生成関数
+    const meetingMinutesFunction = new lambda.Function(this, 'MeetingMinutesFunction', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/meeting-minutes'),
+      role: lambdaRole,
+      timeout: Duration.minutes(5),
+      memorySize: 2048,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      deadLetterQueue: meetingMinutesDLQ,
+      reservedConcurrentExecutions: 5,
+      environment: {
+        MEETING_MINUTES_BUCKET: meetingMinutesBucket.bucketName,
+        CLAUDE_MODEL_ID: 'global.anthropic.claude-sonnet-4-6',
+        ACCESS_LOG_TABLE: accessLogTable.tableName
       }
     });
 
@@ -491,6 +688,53 @@ def handler(event, context):
       authorizationType: apigateway.AuthorizationType.COGNITO
     });
 
+    // 議事録エンドポイント（認証付き）
+    const meetingMinutesResource = api.root.addResource('meeting-minutes', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: allowedOrigins,
+        allowMethods: ['GET', 'POST', 'OPTIONS'],
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
+        allowCredentials: false
+      }
+    });
+    meetingMinutesResource.addMethod('GET', new apigateway.LambdaIntegration(meetingMinutesFunction), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO
+    });
+    meetingMinutesResource.addMethod('POST', new apigateway.LambdaIntegration(meetingMinutesFunction, {
+      timeout: Duration.seconds(29)
+    }), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO
+    });
+
+    // マルチエージェント議論システムエンドポイント
+    const multiAgentResource = api.root.addResource('multi-agent-discussion', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: allowedOrigins,
+        allowMethods: ['POST', 'OPTIONS'],
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
+        allowCredentials: false
+      }
+    });
+    // マルチエージェント議論は長時間実行のため、Lambda Function URLを使用
+    const multiAgentFunctionUrl = multiAgentFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,  // 認証はトークン検証で実施
+      cors: {
+        allowedOrigins: allowedOrigins,
+        allowedMethods: [lambda.HttpMethod.POST],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+        maxAge: Duration.seconds(300)
+      },
+      invokeMode: lambda.InvokeMode.BUFFERED  // 5分まで対応
+    });
+
+    // 出力用
+    new cdk.CfnOutput(this, 'MultiAgentFunctionUrl', {
+      value: multiAgentFunctionUrl.url,
+      description: 'マルチエージェント議論Lambda Function URL'
+    });
+
     // ヘルスチェック用（認証不要、CORS対応）
     const healthResource = api.root.addResource('health', {
       defaultCorsPreflightOptions: {
@@ -563,6 +807,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'ApiGatewayUrl', {
       value: this.apiGatewayUrl,
       description: 'API Gateway URL'
+    });
+
+    new cdk.CfnOutput(this, 'IdentityPoolId', {
+      value: identityPool.ref,
+      description: 'Cognito Identity Pool ID for Transcribe Streaming'
     });
 
   }

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>無機RAG - ISK AI Assistant</title>
+    <title>[DEV] 無機RAG - ISK AI Assistant</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
         :root {
@@ -176,13 +176,15 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <script>
-        // AWS Cognito設定（現在の設定に更新）
+        // AWS Cognito設定（DEV環境・本番ユーザーを共有）
         const CONFIG = {
             region: 'ap-northeast-1',
             userPoolId: 'ap-northeast-1_zG065zZXu',
             userPoolClientId: '320evpoao9264eh5ounfq8c313',
             apiGatewayUrl: 'https://s54esmcz1j.execute-api.ap-northeast-1.amazonaws.com/prod/',
-            assetsUrl: 'https://d3hwl9tcru7yod.cloudfront.net/assets/'
+            chatEndpoint: 'enhanced-chat-dev',  // dev 用 Lambda を呼ぶ
+            assetsUrl: 'https://d3hwl9tcru7yod.cloudfront.net/assets/',
+            environment: 'DEV'
         };
 
         // AWS設定
@@ -987,12 +989,21 @@
 
             renderLogin() {
                 return `
-                    <div class="min-h-screen bg-white flex items-center justify-center">
-                        <div class="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg border border-gray-200">
+                    <div class="min-h-screen bg-white flex flex-col">
+                        <!-- DEV 環境バナー -->
+                        <div class="bg-yellow-400 text-yellow-900 text-center py-2 text-sm font-bold border-b-2 border-yellow-600">
+                            ⚠️ DEV ENVIRONMENT - これは開発・実験環境です ⚠️
+                        </div>
+                        <div class="flex-1 flex items-center justify-center">
+                        <div class="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg border-4 border-yellow-400">
                             <!-- Header with Title -->
                             <div class="text-center space-y-4">
+                                <div class="inline-block bg-yellow-400 text-yellow-900 px-6 py-2 rounded-lg font-black text-2xl tracking-widest shadow-md">
+                                    🛠️ DEV 環境 🛠️
+                                </div>
                                 <h2 class="text-4xl font-bold text-black">無機RAG</h2>
                                 <p class="text-gray-600">ISK社内向け高性能AIチャットシステム</p>
+                                <p class="text-xs text-yellow-700 font-semibold">※ 開発・実験用サイト（本番とは別ユーザー管理）</p>
                             </div>
 
                             <form id="loginForm" class="space-y-6" autocomplete="off">
@@ -1034,6 +1045,7 @@
                             <div class="flex justify-center mt-6">
                                 <img src="${CONFIG.assetsUrl}isk-logo.png" alt="ISK Logo" class="logo-footer opacity-60">
                             </div>
+                        </div>
                         </div>
                     </div>
                 `;
@@ -1110,11 +1122,15 @@
 
                 return `
                     <div class="min-h-screen bg-gray-50 flex flex-col">
+                        <!-- DEV 環境バナー -->
+                        <div class="bg-yellow-400 text-yellow-900 text-center py-1 text-xs font-bold border-b-2 border-yellow-600">
+                            ⚠️ DEV ENVIRONMENT - これは開発・実験環境です。本番は別URLからアクセスしてください ⚠️
+                        </div>
                         <!-- Header (全体を貫通) -->
                         <header class="isk-gradient text-white p-4 shadow-md">
                             <div class="flex justify-between items-center">
                                 <div>
-                                    <h1 class="text-xl font-bold">無機RAG - ISK AI Assistant</h1>
+                                    <h1 class="text-xl font-bold">🛠️ [DEV] 無機RAG - ISK AI Assistant</h1>
                                     <p class="text-sm opacity-80">高機能版 | Local Insight, Global Impact</p>
                                 </div>
                                 <div class="flex items-center space-x-4">
@@ -1163,6 +1179,20 @@
 
                             <!-- 設定・ログアウト -->
                             <div class="p-4 border-t border-gray-200 space-y-2">
+                                <button
+                                    id="meetingMinutesButton"
+                                    class="w-full px-4 py-2 text-left text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                                    onclick="window.open('meeting-minutes.html', '_blank')"
+                                >
+                                    📝 議事録自動生成
+                                </button>
+                                <button
+                                    id="multiAgentButton"
+                                    class="w-full px-4 py-2 text-left text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                                    onclick="window.open('multi-agent-discussion.html', '_blank')"
+                                >
+                                    🎭 マルチエージェント議論
+                                </button>
                                 <button
                                     id="settingsButton"
                                     class="w-full px-4 py-2 text-left text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
@@ -1893,7 +1923,7 @@
                 this.updateChatArea();
 
                 try {
-                    const fullUrl = `${CONFIG.apiGatewayUrl}enhanced-chat`;
+                    const fullUrl = `${CONFIG.apiGatewayUrl}${CONFIG.chatEndpoint || 'enhanced-chat'}`;
                     const token = authManager.getAccessToken();
                     console.log('📡 Enhanced Chat:', fullUrl);
 
